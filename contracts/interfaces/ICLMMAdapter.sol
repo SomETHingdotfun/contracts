@@ -37,11 +37,6 @@ interface ICLMMAdapter {
     int24 tick0;
     int24 tick1;
     int24 tick2;
-    uint24 fee;
-    int24 tickSpacing;
-    uint256 totalAmount;
-    uint256 graduationAmount;
-    bool burnPosition;
   }
 
   /// @notice Add single-sided liquidity to a concentrated pool
@@ -55,7 +50,7 @@ interface ICLMMAdapter {
   /// @param _amountOut The amount of tokens to swap
   /// @param _maxAmountIn The maximum amount of tokens to receive
   /// @return amountIn The amount of tokens received
-  function swapWithExactOutput(IERC20 _tokenIn, IERC20 _tokenOut, uint256 _amountOut, uint256 _maxAmountIn, uint24 _fee)
+  function swapWithExactOutput(IERC20 _tokenIn, IERC20 _tokenOut, uint256 _amountOut, uint256 _maxAmountIn)
     external
     returns (uint256 amountIn);
 
@@ -65,7 +60,7 @@ interface ICLMMAdapter {
   /// @param _amountIn The amount of tokens to swap
   /// @param _minAmountOut The minimum amount of tokens to receive
   /// @return amountOut The amount of tokens received
-  function swapWithExactInput(IERC20 _tokenIn, IERC20 _tokenOut, uint256 _amountIn, uint256 _minAmountOut, uint24 _fee)
+  function swapWithExactInput(IERC20 _tokenIn, IERC20 _tokenOut, uint256 _amountIn, uint256 _minAmountOut)
     external
     returns (uint256 amountOut);
 
