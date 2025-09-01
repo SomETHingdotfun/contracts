@@ -28,8 +28,8 @@ contract TokenLaunchpadLinea is TokenLaunchpad {
     internal
     override
   {
-    address etherxTreasury = 0xF0FfFD0292dE675e865A9b506bd2c434e0813d74;
-    address somethingTreasury = 0x5135f3A6aC33C8616b5ee59b89afc1021D1a8086;
+    address etherxTreasury = 0x8EfeFDBe3f3f7D48b103CD220d634CBF1d0Ae1a6;
+    address somethingTreasury = 0x8EfeFDBe3f3f7D48b103CD220d634CBF1d0Ae1a6;
 
     // 20% to the etherx treasury
     // 40% to the something treasury

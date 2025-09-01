@@ -5,7 +5,7 @@ import {SomeToken} from "contracts/SomeToken.sol";
 import {IERC20, ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 import {TokenLaunchpadLinea} from "contracts/launchpad/TokenLaunchpadLinea.sol";
 
-import {Swapper} from "contracts/launchpad/clmm/Swapper.sol";
+import {UIHelper} from "contracts/launchpad/clmm/UIHelper.sol";
 import {RamsesAdapter} from "contracts/launchpad/clmm/adapters/RamsesAdapter.sol";
 
 import {MockERC20} from "contracts/mocks/MockERC20.sol";
@@ -18,7 +18,7 @@ contract TokenLaunchpadLineaTest is Test {
   MockERC20 something;
 
   TokenLaunchpadLinea launchpad;
-  Swapper swapper;
+  UIHelper swapper;
 
   RamsesAdapter adapter;
 
@@ -37,8 +37,7 @@ contract TokenLaunchpadLineaTest is Test {
     launchpad = new TokenLaunchpadLinea();
     adapter = new RamsesAdapter();
 
-    swapper = new Swapper(address(weth), address(0), address(launchpad));
-
+    swapper = new UIHelper(address(weth), address(0), address(launchpad));
     something = new MockERC20("Something", "somETHing", 18);
 
     launchpad.initialize(owner, address(something), address(adapter));
@@ -76,7 +75,7 @@ contract TokenLaunchpadLineaTest is Test {
 
     something.approve(address(launchpad), 1e18);
 
-    (address token,,) = launchpad.createAndBuy(
+    (address token,,,) = launchpad.createAndBuy(
       ITokenLaunchpad.CreateParams({salt: salt, name: "Test Token", symbol: "TEST", metadata: "Test Metadata"}),
       address(0),
       0
@@ -94,7 +93,7 @@ contract TokenLaunchpadLineaTest is Test {
 
     something.approve(address(launchpad), 101e18);
 
-    (address token,,) = launchpad.createAndBuy(
+    (address token,,,) = launchpad.createAndBuy(
       ITokenLaunchpad.CreateParams({salt: salt, name: "Test Token", symbol: "TEST", metadata: "Test Metadata"}),
       address(0),
       100e18

@@ -3,10 +3,11 @@ pragma solidity ^0.8.0;
 
 import {ICLMMAdapter} from "./ICLMMAdapter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 
 /// @title ITokenLaunchpad Interface
 /// @notice Interface for the TokenLaunchpad contract that handles token launches
-interface ITokenLaunchpad {
+interface ITokenLaunchpad is IERC721 {
   /// @notice Parameters required to create a new token launch
   /// @param name The name of the token
   /// @param symbol The symbol of the token
@@ -96,10 +97,11 @@ interface ITokenLaunchpad {
   /// @return token The address of the newly created token
   /// @return received The amount of tokens received if the user chooses to buy at launch
   /// @return swapped The amount of tokens swapped if the user chooses to swap at launch
+  /// @return tokenId The token id of the newly created token
   function createAndBuy(CreateParams memory p, address expected, uint256 amount)
     external
     payable
-    returns (address token, uint256 received, uint256 swapped);
+    returns (address token, uint256 received, uint256 swapped, uint256 tokenId);
 
   /// @notice Gets the adapter
   /// @return adapter The adapter

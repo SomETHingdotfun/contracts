@@ -27,7 +27,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 /// @title SOMETHING
 /// @notice A contract for funding Token
 contract SomeMasterToken is ERC20 {
-  constructor() ERC20("Something.fun", "somETHing") {
+  constructor() ERC20("Nothing.fun", "NOTH") {
     _mint(msg.sender, 1_000_000_000 * 1e18); // 1 bn supply
   }
 }

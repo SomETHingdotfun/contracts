@@ -29,6 +29,7 @@
     "dotenv": "^16.4.7",
     "ethers": "^6.4.0",
     "hardhat-abi-exporter": "^2.10.1",
+    "hardhat-dependency-compiler": "^1.2.1",
     "hardhat-deploy": "^1.0.1",
     "hardhat-foundry": "^0.0.5",
     "hardhat-gas-reporter": "^1.0.8",
