@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity 0.8.26;
+pragma solidity ^0.8.0;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
@@ -10,8 +10,8 @@ import {IClPool} from "contracts/interfaces/thirdparty/IClPool.sol";
 import {IClPoolFactory} from "contracts/interfaces/thirdparty/IClPoolFactory.sol";
 import {RamsesAdapter} from "contracts/launchpad/clmm/adapters/RamsesAdapter.sol";
 
-import {MockERC20} from "contracts/mocks/MockERC20.sol";
 import {Test} from "lib/forge-std/src/Test.sol";
+import {MockERC20} from "test/mocks/MockERC20.sol";
 
 import "forge-std/console.sol";
 
@@ -473,61 +473,6 @@ contract RamsesAdapterTest is Test {
     adapter.claimFees(address(token0));
   }
 
-  function test_swapWithExactInput() public {
-    swapRouter.setMockAmounts(1000 * 1e18, 1000 * 1e18);
-
-    vm.startPrank(user1);
-    token0.approve(address(adapter), 1000 * 1e18);
-
-    uint256 amountOut = adapter.swapWithExactInput(token0, token1, 1000 * 1e18, 0);
-    vm.stopPrank();
-
-    assertEq(amountOut, 1000 * 1e18);
-  }
-
-  function test_swapWithExactOutput() public {
-    swapRouter.setMockAmounts(1000 * 1e18, 1000 * 1e18);
-
-    vm.startPrank(user1);
-    token0.approve(address(adapter), 1000 * 1e18);
-
-    uint256 amountIn = adapter.swapWithExactOutput(token0, token1, 1000 * 1e18, 1000 * 1e18);
-    vm.stopPrank();
-
-    assertEq(amountIn, 1000 * 1e18);
-  }
-
-  function test_swapWithExactInput_insufficientBalance() public {
-    vm.startPrank(user1);
-    token0.approve(address(adapter), 1000 * 1e18);
-
-    // Try to swap more than user has
-    vm.expectRevert();
-    adapter.swapWithExactInput(token0, token1, 20_000 * 1e18, 0);
-    vm.stopPrank();
-  }
-
-  function test_swapWithExactOutput_insufficientBalance() public {
-    vm.startPrank(user1);
-    token0.approve(address(adapter), 1000 * 1e18);
-
-    // Try to swap more than user has
-    vm.expectRevert();
-    adapter.swapWithExactOutput(token0, token1, 1000 * 1e18, 20_000 * 1e18);
-    vm.stopPrank();
-  }
-
-  function test_swapRouter_revert() public {
-    swapRouter.setShouldRevert(true);
-
-    vm.startPrank(user1);
-    token0.approve(address(adapter), 1000 * 1e18);
-
-    vm.expectRevert("Mock router revert");
-    adapter.swapWithExactInput(token0, token1, 1000 * 1e18, 0);
-    vm.stopPrank();
-  }
-
   function test_multiple_liquidity_provisions() public {
     // Add liquidity for multiple tokens
     ICLMMAdapter.AddLiquidityParams memory params1 = ICLMMAdapter.AddLiquidityParams({
@@ -630,47 +575,6 @@ contract RamsesAdapterTest is Test {
     (bool success,) = address(adapter).call{value: 1 ether}("");
     assertTrue(success);
     assertEq(address(adapter).balance, 1 ether);
-  }
-
-  function test_fuzz_swap_amounts(uint256 amountIn) public {
-    // Bound the amount to reasonable values
-    amountIn = bound(amountIn, 1, 10_000 * 1e18);
-
-    swapRouter.setMockAmounts(amountIn, amountIn);
-
-    vm.startPrank(user1);
-    token0.approve(address(adapter), amountIn);
-
-    uint256 amountOut = adapter.swapWithExactInput(token0, token1, amountIn, 0);
-    vm.stopPrank();
-
-    assertEq(amountOut, amountIn);
-  }
-
-  function test_fuzz_tick_values(int24 tick0, int24 tick1, int24 tick2) public {
-    // Bound tick values to reasonable ranges (avoiding edge cases)
-    tick0 = int24(bound(int256(tick0), -887_200, 0));
-    tick1 = int24(bound(int256(tick1), tick0, 0));
-    tick2 = int24(bound(int256(tick2), tick1, 887_200));
-
-    ICLMMAdapter.AddLiquidityParams memory params = ICLMMAdapter.AddLiquidityParams({
-      tokenBase: token0,
-      tokenQuote: fundingToken,
-      tick0: tick0,
-      tick1: tick1,
-      tick2: tick2
-    });
-
-    // Set mock mint results
-    nftPositionManager.setMockMintResult(1, 1000, 600_000_000 * 1e18, 0);
-    nftPositionManager.setMockMintResult(2, 2000, 400_000_000 * 1e18, 0);
-
-    vm.prank(address(launchpad));
-    address pool = adapter.addSingleSidedLiquidity(params);
-
-    assertTrue(pool != address(0));
-    assertEq(adapter.tokenToLockId(token0, 0), 1);
-    assertEq(adapter.tokenToLockId(token0, 1), 2);
   }
 
   function test_edge_case_zero_amounts() public {

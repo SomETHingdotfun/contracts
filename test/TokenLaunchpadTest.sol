@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity 0.8.26;
+pragma solidity ^0.8.0;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SomeToken} from "contracts/SomeToken.sol";
@@ -8,8 +8,8 @@ import {ICLMMAdapter} from "contracts/interfaces/ICLMMAdapter.sol";
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 import {TokenLaunchpad} from "contracts/launchpad/TokenLaunchpad.sol";
 
-import {MockERC20} from "contracts/mocks/MockERC20.sol";
 import {Test} from "lib/forge-std/src/Test.sol";
+import {MockERC20} from "test/mocks/MockERC20.sol";
 
 import "forge-std/console.sol";
 

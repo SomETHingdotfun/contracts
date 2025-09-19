@@ -20,3 +20,5 @@ solcInputs
 abi
 forge-build
 cache_hardhat
+
+lcov.info
