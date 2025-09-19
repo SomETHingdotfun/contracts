@@ -52,7 +52,7 @@ abstract contract TokenLaunchpad is ITokenLaunchpad, OwnableUpgradeable, ERC721E
     adapter = ICLMMAdapter(_adapter);
     cron = _owner;
     __Ownable_init(_owner);
-    __ERC721_init("Nothing.fun", "nothing");
+    __ERC721_init("Something.fun", "somETHing");
   }
 
   /// @inheritdoc ITokenLaunchpad

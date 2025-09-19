@@ -224,10 +224,10 @@ contract MockCLSwapRouter {
   struct ExactInputSingleParams {
     address tokenIn;
     address tokenOut;
-    uint256 amountIn;
+    int24 tickSpacing;
     address recipient;
     uint256 deadline;
-    int24 tickSpacing;
+    uint256 amountIn;
     uint256 amountOutMinimum;
     uint160 sqrtPriceLimitX96;
   }
@@ -235,10 +235,10 @@ contract MockCLSwapRouter {
   struct ExactOutputSingleParams {
     address tokenIn;
     address tokenOut;
-    uint256 amountOut;
+    int24 tickSpacing;
     address recipient;
     uint256 deadline;
-    int24 tickSpacing;
+    uint256 amountOut;
     uint256 amountInMaximum;
     uint160 sqrtPriceLimitX96;
   }
@@ -269,12 +269,12 @@ contract MockCLSwapRouter {
   function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn) {
     if (shouldRevert) revert("Mock router revert");
 
-    // Simulate successful swap
-    IERC20(params.tokenIn).transferFrom(msg.sender, address(this), params.amountInMaximum);
-
-    // In a real scenario, we would transfer the output tokens
-    // For testing, we'll just return the mock amount
+    // Simulate successful swap - only transfer the amount we actually need
     amountIn = mockAmountIn;
+    IERC20(params.tokenIn).transferFrom(msg.sender, address(this), amountIn);
+
+    // In a real scenario, we would transfer the output tokens to the recipient
+    // For testing, we'll just return the mock amount
   }
 }
 
@@ -642,5 +642,40 @@ contract RamsesAdapterTest is Test {
     (uint256 claimedFee0, uint256 claimedFee1) = adapter.claimedFees(address(token0));
     assertEq(claimedFee0, 250 * 1e18);
     assertEq(claimedFee1, 450 * 1e18);
+  }
+
+  function test_swapWithExactOutput() public {
+    // Set up mock swap router to return a specific amount
+    uint256 expectedAmountIn = 1000 * 1e18;
+    uint256 amountOut = 500 * 1e18;
+    uint256 maxAmountIn = 2000 * 1e18;
+
+    swapRouter.setMockAmounts(amountOut, expectedAmountIn);
+
+    // Record initial balances
+    uint256 initialToken0Balance = token0.balanceOf(user1);
+    uint256 initialAdapterBalance = token0.balanceOf(address(adapter));
+
+    // Approve the adapter to spend user1's tokens
+    vm.prank(user1);
+    token0.approve(address(adapter), maxAmountIn);
+
+    // Perform the swap
+    vm.prank(user1);
+    uint256 actualAmountIn = adapter.swapWithExactOutput(token0, token1, amountOut, maxAmountIn);
+
+    // Verify the swap was successful
+    assertEq(actualAmountIn, expectedAmountIn);
+
+    // The adapter refunds ALL remaining tokens back to the user, so:
+    // - User transfers maxAmountIn to adapter
+    // - Adapter uses expectedAmountIn for the swap
+    // - Adapter refunds the remaining tokens (maxAmountIn - expectedAmountIn) back to user
+    // - User also gets back the adapter's original balance
+    uint256 expectedUserBalance = initialToken0Balance - expectedAmountIn + initialAdapterBalance;
+    assertEq(token0.balanceOf(user1), expectedUserBalance);
+
+    // Verify the adapter has no remaining tokens (all refunded)
+    assertEq(token0.balanceOf(address(adapter)), 0);
   }
 }

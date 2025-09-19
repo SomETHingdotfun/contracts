@@ -36,6 +36,6 @@ contract TokenLaunchpadLinea is TokenLaunchpad {
     IERC20(_token0).transfer(somethingTreasury, _amount0 * 80 / 100);
 
     IERC20(_token1).transfer(etherxTreasury, _amount1 * 20 / 100);
-    IERC20(_token1).transfer(somethingTreasury, _amount1 * 90 / 100);
+    IERC20(_token1).transfer(somethingTreasury, _amount1 * 80 / 100);
   }
 }

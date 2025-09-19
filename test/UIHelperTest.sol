@@ -74,6 +74,7 @@ contract MockWETH9 {
 contract MockODOS {
   mapping(address => uint256) public mockOutputAmounts;
   bool public shouldRevert = false;
+  bool public shouldRevertOnCall = false;
 
   function setMockOutput(address token, uint256 amount) external {
     mockOutputAmounts[token] = amount;
@@ -83,19 +84,20 @@ contract MockODOS {
     shouldRevert = _shouldRevert;
   }
 
+  function setShouldRevertOnCall(bool _shouldRevert) external {
+    shouldRevertOnCall = _shouldRevert;
+  }
+
   receive() external payable {
     if (shouldRevert) {
       revert("Mock ODOS revert");
     }
-    // Simulate successful swap by minting tokens to the caller
-    // This is a mock, so we'll assume the swap was successful
   }
 
   fallback() external payable {
-    if (shouldRevert) {
-      revert("Mock ODOS revert");
+    if (shouldRevertOnCall) {
+      revert("Mock ODOS call revert");
     }
-    // Simulate successful swap
   }
 }
 
@@ -109,12 +111,10 @@ contract UIHelperTest is Test {
 
   address owner;
   address user1;
-  address user2;
 
   function setUp() public {
     owner = makeAddr("owner");
     user1 = makeAddr("user1");
-    user2 = makeAddr("user2");
 
     // Deploy mock contracts
     fundingToken = new MockERC20("Funding Token", "FUND", 18);
@@ -131,7 +131,6 @@ contract UIHelperTest is Test {
 
     // Fund users
     fundingToken.mint(user1, 1000 * 1e18);
-    fundingToken.mint(user2, 1000 * 1e18);
     fundingToken.mint(address(this), 1000 * 1e18);
 
     // Fund the launchpad with funding tokens for the registration swap
@@ -142,18 +141,36 @@ contract UIHelperTest is Test {
 
     // Fund WETH contract with some ETH for testing
     vm.deal(address(weth), 1000 ether);
-
-    // Label addresses for better debugging
-    vm.label(address(uiHelper), "uiHelper");
-    vm.label(address(launchpad), "launchpad");
-    vm.label(address(adapter), "adapter");
-    vm.label(address(fundingToken), "fundingToken");
-    vm.label(address(weth), "weth");
-    vm.label(address(odos), "odos");
-    vm.label(owner, "owner");
-    vm.label(user1, "user1");
-    vm.label(user2, "user2");
   }
+
+  // ============ Helper Functions ============
+
+  function _createTokenInLaunchpad(string memory salt, string memory name, string memory symbol)
+    internal
+    returns (address token, uint256 tokenId)
+  {
+    ITokenLaunchpad.CreateParams memory params = ITokenLaunchpad.CreateParams({
+      salt: keccak256(abi.encodePacked(salt)),
+      name: name,
+      symbol: symbol,
+      metadata: string(abi.encodePacked("ipfs://", salt))
+    });
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
+    });
+
+    vm.prank(user1);
+    (token,,, tokenId) = uiHelper.createAndBuy(odosParams, params, address(0), 0);
+  }
+
+  // ============ Constructor Tests ============
 
   function test_constructor() public {
     assertEq(address(uiHelper.weth()), address(weth));
@@ -167,6 +184,8 @@ contract UIHelperTest is Test {
     assertEq(fundingToken.allowance(address(uiHelper), address(launchpad)), type(uint256).max);
   }
 
+  // ============ createAndBuy Tests ============
+
   function test_createAndBuy_withETH() public {
     ITokenLaunchpad.CreateParams memory params = ITokenLaunchpad.CreateParams({
       salt: keccak256("test-salt"),
@@ -177,7 +196,7 @@ contract UIHelperTest is Test {
 
     UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: IERC20(address(0)), // ETH
-      tokenAmountIn: 0, // No ETH amount for zap
+      tokenAmountIn: 0,
       odosTokenIn: fundingToken,
       odosTokenAmountIn: 0,
       minOdosTokenAmountOut: 0,
@@ -191,13 +210,9 @@ contract UIHelperTest is Test {
 
     // Verify token was created
     assertTrue(token != address(0));
-
-    // Verify NFT was minted to user1
     assertEq(launchpad.ownerOf(tokenId), user1);
-
-    // Verify swap amounts
-    assertEq(received, 0); // No additional purchase
-    assertEq(swapped, adapter.mockSwapAmountOut()); // Registration swap
+    assertEq(received, 0);
+    assertEq(swapped, adapter.mockSwapAmountOut());
   }
 
   function test_createAndBuy_withToken() public {
@@ -220,20 +235,14 @@ contract UIHelperTest is Test {
 
     vm.startPrank(user1);
     fundingToken.approve(address(uiHelper), 100 * 1e18);
-
     (address token, uint256 received, uint256 swapped, uint256 tokenId) =
       uiHelper.createAndBuy(odosParams, params, address(0), 0);
     vm.stopPrank();
 
-    // Verify token was created
     assertTrue(token != address(0));
-
-    // Verify NFT was minted to user1
     assertEq(launchpad.ownerOf(tokenId), user1);
-
-    // Verify swap amounts
-    assertEq(received, 0); // No additional purchase
-    assertEq(swapped, adapter.mockSwapAmountOut()); // Registration swap
+    assertEq(received, 0);
+    assertEq(swapped, adapter.mockSwapAmountOut());
   }
 
   function test_createAndBuy_withOdosSwap() public {
@@ -248,67 +257,168 @@ contract UIHelperTest is Test {
     odos.setMockOutput(address(fundingToken), 100 * 1e18);
 
     UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
-      tokenIn: IERC20(address(0)), // ETH
-      tokenAmountIn: 0, // No ETH amount for zap to avoid OutOfFunds
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
       odosTokenIn: IERC20(address(0)),
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: "mock-odos-data"
+    });
+
+    vm.prank(user1);
+    (address token,,, uint256 tokenId) = uiHelper.createAndBuy(odosParams, params, address(0), 0);
+
+    assertTrue(token != address(0));
+    assertEq(launchpad.ownerOf(tokenId), user1);
+  }
+
+  // ============ buyWithExactInputWithOdos Tests ============
+
+  function test_buyWithExactInputWithOdos_withToken() public {
+    (address token,) = _createTokenInLaunchpad("test-buy-token", "Buy Token Token", "BUYTOKEN");
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: fundingToken,
+      tokenAmountIn: 100 * 1e18,
+      odosTokenIn: fundingToken,
       odosTokenAmountIn: 0,
       minOdosTokenAmountOut: 0,
       odosTokenOut: fundingToken,
       odosData: ""
     });
 
+    vm.startPrank(user1);
+    fundingToken.approve(address(uiHelper), 100 * 1e18);
+    uint256 amountOut = uiHelper.buyWithExactInputWithOdos(odosParams, IERC20(token), 0);
+    vm.stopPrank();
+
+    assertEq(amountOut, adapter.mockSwapAmountOut());
+  }
+
+  function test_buyWithExactInputWithOdos_withOdosData() public {
+    (address token,) = _createTokenInLaunchpad("test-buy-odos", "Buy ODOS Token", "BUYODOS");
+
+    // Set up mock ODOS output
+    odos.setMockOutput(address(fundingToken), 100 * 1e18);
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
+      odosTokenIn: IERC20(address(0)),
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: "mock-odos-data"
+    });
+
     vm.prank(user1);
-    (address token, uint256 received, uint256 swapped, uint256 tokenId) =
-      uiHelper.createAndBuy(odosParams, params, address(0), 0);
-
-    // Verify token was created
-    assertTrue(token != address(0));
-
-    // Verify NFT was minted to user1
-    assertEq(launchpad.ownerOf(tokenId), user1);
+    uint256 amountOut = uiHelper.buyWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), 0);
   }
 
-  function test_buyWithExactInputWithOdos() public {
-    // Skip this test for now due to complex ETH handling in UIHelper
-    // The core functionality is tested in other tests
-    assertTrue(true);
+  function test_buyWithExactInputWithOdos_withInvalidMinAmountOut() public {
+    (address token,) = _createTokenInLaunchpad("test-buy-invalid", "Buy Invalid Token", "BUYINV");
+
+    // Set up mock ODOS output with insufficient amount
+    odos.setMockOutput(address(fundingToken), 30 * 1e18);
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
+      odosTokenIn: IERC20(address(0)),
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 50 * 1e18,
+      odosTokenOut: fundingToken,
+      odosData: "mock-odos-data"
+    });
+
+    vm.prank(user1);
+    vm.expectRevert("!minAmountIn");
+    uiHelper.buyWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), 0);
   }
 
-  function test_sellWithExactInputWithOdos() public {
-    // Skip this test for now due to complex ETH handling in UIHelper
-    // The core functionality is tested in other tests
-    assertTrue(true);
+  // ============ sellWithExactInputWithOdos Tests ============
+
+  function test_sellWithExactInputWithOdos_basic() public {
+    (address token,) = _createTokenInLaunchpad("test-sell-basic", "Sell Basic Token", "SELLBASIC");
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
+    });
+
+    uint256 amountToSell = 100 * 1e18;
+
+    vm.startPrank(user1);
+    IERC20(token).approve(address(uiHelper), amountToSell);
+    uint256 amountSwapOut = uiHelper.sellWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), amountToSell);
+    vm.stopPrank();
+
+    assertEq(amountSwapOut, adapter.mockSwapAmountOut());
   }
+
+  function test_sellWithExactInputWithOdos_withOdosData() public {
+    (address token,) = _createTokenInLaunchpad("test-sell-odos", "Sell ODOS Token", "SELLODOS");
+
+    // Set up mock ODOS output
+    odos.setMockOutput(address(fundingToken), 100 * 1e18);
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
+      odosTokenIn: IERC20(address(0)),
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: "mock-odos-data"
+    });
+
+    uint256 amountToSell = 100 * 1e18;
+
+    vm.startPrank(user1);
+    IERC20(token).approve(address(uiHelper), amountToSell);
+    uint256 amountSwapOut = uiHelper.sellWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), amountToSell);
+    vm.stopPrank();
+
+    assertEq(amountSwapOut, adapter.mockSwapAmountOut());
+  }
+
+  // ============ Purge Tests ============
 
   function test_purge_eth() public {
     // Send ETH to UIHelper
     vm.deal(address(uiHelper), 1 ether);
 
+    ITokenLaunchpad.CreateParams memory params = ITokenLaunchpad.CreateParams({
+      salt: keccak256("test-salt-purge"),
+      name: "Purge Token",
+      symbol: "PURGE",
+      metadata: "ipfs://purge"
+    });
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
+    });
+
     uint256 initialBalance = user1.balance;
 
     vm.prank(user1);
-    uiHelper.createAndBuy(
-      UIHelper.OdosParams({
-        tokenIn: IERC20(address(0)),
-        tokenAmountIn: 0,
-        odosTokenIn: fundingToken,
-        odosTokenAmountIn: 0,
-        minOdosTokenAmountOut: 0,
-        odosTokenOut: fundingToken,
-        odosData: ""
-      }),
-      ITokenLaunchpad.CreateParams({
-        salt: keccak256("test-salt-purge"),
-        name: "Purge Token",
-        symbol: "PURGE",
-        metadata: "ipfs://purge"
-      }),
-      address(0),
-      0
-    );
+    uiHelper.createAndBuy(odosParams, params, address(0), 0);
 
-    // Check that any remaining ETH was sent back to user
-    // (This is a simplified test - in reality, the purge happens during createAndBuy)
+    // Check that ETH was purged (sent back to user)
+    assertEq(user1.balance, initialBalance + 1 ether);
+    assertEq(address(uiHelper).balance, 0);
   }
 
   function test_purge_token() public {
@@ -316,32 +426,80 @@ contract UIHelperTest is Test {
     MockERC20 testToken = new MockERC20("Test Token", "TEST", 18);
     testToken.mint(address(uiHelper), 100 * 1e18);
 
+    ITokenLaunchpad.CreateParams memory params = ITokenLaunchpad.CreateParams({
+      salt: keccak256("test-salt-purge-token"),
+      name: "Purge Token Test",
+      symbol: "PURGE2",
+      metadata: "ipfs://purge2"
+    });
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
+    });
+
     uint256 initialBalance = testToken.balanceOf(user1);
 
     vm.prank(user1);
-    uiHelper.createAndBuy(
-      UIHelper.OdosParams({
-        tokenIn: IERC20(address(0)),
-        tokenAmountIn: 0,
-        odosTokenIn: fundingToken,
-        odosTokenAmountIn: 0,
-        minOdosTokenAmountOut: 0,
-        odosTokenOut: fundingToken,
-        odosData: ""
-      }),
-      ITokenLaunchpad.CreateParams({
-        salt: keccak256("test-salt-purge-token"),
-        name: "Purge Token Test",
-        symbol: "PURGE2",
-        metadata: "ipfs://purge2"
-      }),
-      address(0),
-      0
-    );
-
-    // Check that tokens were purged (sent back to user)
-    // This is a simplified test - in reality, the purge happens during createAndBuy
+    uiHelper.createAndBuy(odosParams, params, address(0), 0);
   }
+
+  function test_purge_fundingToken() public {
+    // Send funding token to UIHelper
+    fundingToken.mint(address(uiHelper), 200 * 1e18);
+
+    ITokenLaunchpad.CreateParams memory params = ITokenLaunchpad.CreateParams({
+      salt: keccak256("test-salt-purge-funding"),
+      name: "Purge Funding Token",
+      symbol: "PURGE3",
+      metadata: "ipfs://purge3"
+    });
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
+    });
+
+    uint256 initialBalance = fundingToken.balanceOf(user1);
+
+    vm.prank(user1);
+    uiHelper.createAndBuy(odosParams, params, address(0), 0);
+  }
+
+  // ============ Error Cases Tests ============
+
+  function test_odos_call_failure() public {
+    // Set ODOS to revert on calls
+    odos.setShouldRevertOnCall(true);
+
+    (address token,) = _createTokenInLaunchpad("test-odos-fail", "ODOS Fail Token", "ODOSFAIL");
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
+      odosTokenIn: IERC20(address(0)),
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: "mock-odos-data"
+    });
+
+    vm.prank(user1);
+    vm.expectRevert("Odos call failed");
+    uiHelper.buyWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), 0);
+  }
+
+  // ============ Receive Ether Test ============
 
   function test_receive_ether() public {
     // Test that UIHelper can receive ETH
@@ -350,38 +508,18 @@ contract UIHelperTest is Test {
     assertEq(address(uiHelper).balance, 1 ether);
   }
 
-  function test_invalid_eth_amount() public {
-    // Skip this test for now due to complex ETH handling in UIHelper
-    // The core functionality is tested in other tests
-    assertTrue(true);
-  }
+  // ============ Fuzz Tests ============
 
-  function test_odos_call_failure() public {
-    // Skip this test for now due to complex ETH handling in UIHelper
-    // The core functionality is tested in other tests
-    assertTrue(true);
-  }
-
-  function test_min_amount_out_validation() public {
-    // Skip this test for now due to complex ETH handling in UIHelper
-    // The core functionality is tested in other tests
-    assertTrue(true);
-  }
-
-  function test_fuzz_createAndBuy_eth_amount(uint256 ethAmount) public {
+  function test_fuzz_buyWithExactInputWithOdos(uint256 tokenAmount) public {
     // Bound the amount to reasonable values
-    ethAmount = bound(ethAmount, 0.001 ether, 10 ether);
+    tokenAmount = bound(tokenAmount, 1 * 1e18, 1000 * 1e18);
 
-    ITokenLaunchpad.CreateParams memory params = ITokenLaunchpad.CreateParams({
-      salt: keccak256(abi.encode("fuzz-salt", ethAmount)),
-      name: string(abi.encodePacked("Fuzz Token ", ethAmount)),
-      symbol: string(abi.encodePacked("FUZZ", ethAmount)),
-      metadata: string(abi.encodePacked("ipfs://fuzz", ethAmount))
-    });
+    // First create a token in the launchpad so claimFees works
+    (address token,) = _createTokenInLaunchpad("fuzz-buy", "Fuzz Buy Token", "FUZZBUY");
 
     UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
-      tokenIn: IERC20(address(0)), // ETH
-      tokenAmountIn: 0, // No ETH amount for zap to avoid OutOfFunds
+      tokenIn: fundingToken,
+      tokenAmountIn: tokenAmount,
       odosTokenIn: fundingToken,
       odosTokenAmountIn: 0,
       minOdosTokenAmountOut: 0,
@@ -389,13 +527,16 @@ contract UIHelperTest is Test {
       odosData: ""
     });
 
-    vm.prank(user1);
-    (address token,,, uint256 tokenId) = uiHelper.createAndBuy(odosParams, params, address(0), 0);
+    vm.startPrank(user1);
+    fundingToken.approve(address(uiHelper), tokenAmount);
+    uint256 amountOut = uiHelper.buyWithExactInputWithOdos(odosParams, IERC20(token), 0);
+    vm.stopPrank();
 
-    // Verify token was created
-    assertTrue(token != address(0));
-    assertEq(launchpad.ownerOf(tokenId), user1);
+    // Verify amount out
+    assertEq(amountOut, adapter.mockSwapAmountOut());
   }
+
+  // ============ Multiple Operations Tests ============
 
   function test_multiple_createAndBuy() public {
     // Create multiple tokens to test state management
@@ -425,5 +566,57 @@ contract UIHelperTest is Test {
     }
 
     assertEq(launchpad.getTotalTokens(), 3);
+  }
+
+  function test_multiple_buyWithExactInputWithOdos() public {
+    // Create a token first
+    (address token,) = _createTokenInLaunchpad("multi-buy", "Multi Buy Token", "MULTIBUY");
+
+    // Perform multiple buy operations
+    for (uint256 i = 0; i < 3; i++) {
+      UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+        tokenIn: fundingToken,
+        tokenAmountIn: 100 * 1e18,
+        odosTokenIn: fundingToken,
+        odosTokenAmountIn: 0,
+        minOdosTokenAmountOut: 0,
+        odosTokenOut: fundingToken,
+        odosData: ""
+      });
+
+      vm.startPrank(user1);
+      fundingToken.approve(address(uiHelper), 100 * 1e18);
+      uint256 amountOut = uiHelper.buyWithExactInputWithOdos(odosParams, IERC20(token), 0);
+      vm.stopPrank();
+
+      assertEq(amountOut, adapter.mockSwapAmountOut());
+    }
+  }
+
+  // ============ Edge Cases Tests ============
+
+  function test_createAndBuy_withZeroAddress() public {
+    ITokenLaunchpad.CreateParams memory params = ITokenLaunchpad.CreateParams({
+      salt: keccak256("test-salt-zero"),
+      name: "Zero Token",
+      symbol: "ZERO",
+      metadata: "ipfs://zero"
+    });
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
+      odosTokenIn: IERC20(address(0)),
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: IERC20(address(0)),
+      odosData: ""
+    });
+
+    vm.prank(user1);
+    (address token,,, uint256 tokenId) = uiHelper.createAndBuy(odosParams, params, address(0), 0);
+
+    assertTrue(token != address(0));
+    assertEq(launchpad.ownerOf(tokenId), user1);
   }
 }
