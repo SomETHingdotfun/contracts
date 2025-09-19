@@ -38,7 +38,7 @@ contract TokenLaunchpadLineaTest is Test {
     adapter = new RamsesAdapter();
 
     swapper = new UIHelper(address(weth), address(0), address(launchpad));
-    something = new MockERC20("Something", "somETHing", 18);
+    something = new MockERC20("SomeETHing", "somETHing", 18);
 
     launchpad.initialize(owner, address(something), address(adapter));
     adapter.initialize(
