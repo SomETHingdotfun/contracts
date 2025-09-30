@@ -21,11 +21,13 @@ pragma solidity ^0.8.0;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IWETH9} from "@uniswap/v4-periphery/src/interfaces/external/IWETH9.sol";
 import {ICLMMAdapter} from "contracts/interfaces/ICLMMAdapter.sol";
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 
-contract UIHelper {
+contract UIHelper is ReentrancyGuard {
   using SafeERC20 for IERC20;
 
   IWETH9 public immutable weth;
@@ -61,7 +63,7 @@ contract UIHelper {
     ITokenLaunchpad.CreateParams memory _params,
     address _expected,
     uint256 _amount
-  ) public payable returns (address token, uint256 received, uint256 swapped, uint256 tokenId) {
+  ) public payable nonReentrant returns (address token, uint256 received, uint256 swapped, uint256 tokenId) {
     _performZap(_odosParams);
 
     (token, received, swapped, tokenId) = launchpad.createAndBuy(_params, _expected, _amount);
@@ -79,6 +81,7 @@ contract UIHelper {
   function buyWithExactInputWithOdos(OdosParams memory _odosParams, IERC20 _tokenOut, uint256 _minAmountOut)
     public
     payable
+    nonReentrant
     returns (uint256 amountOut)
   {
     _performZap(_odosParams);
@@ -99,6 +102,7 @@ contract UIHelper {
   function sellWithExactInputWithOdos(OdosParams memory _odosParams, IERC20 _tokenIn, uint256 _amountToSell)
     public
     payable
+    nonReentrant
     returns (uint256 amountSwapOut)
   {
     _tokenIn.safeTransferFrom(msg.sender, address(this), _amountToSell);
@@ -108,7 +112,11 @@ contract UIHelper {
     amountSwapOut = adapter.swapWithExactInput(_tokenIn, fundingToken, _amountToSell, _odosParams.tokenAmountIn);
 
     // if needed we zap the fundingToken for any other token
-    _performZap(_odosParams);
+    if (_odosParams.odosData.length > 0) {
+      require(address(_odosParams.tokenIn) == address(fundingToken), "Invalid token in");
+      require(_odosParams.tokenAmountIn == 0, "Token amount in is 0"); // not needed as we are selling exact input
+      _performZap(_odosParams);
+    }
 
     // send everything back & collect fees
     _purgeAll(_odosParams, _tokenIn);
@@ -144,7 +152,7 @@ contract UIHelper {
   function _performZap(OdosParams memory odosParams) internal {
     if (address(odosParams.tokenIn) == address(0)) {
       require(msg.value == odosParams.tokenAmountIn, "Invalid ETH amount");
-    } else {
+    } else if (odosParams.tokenAmountIn > 0) {
       odosParams.tokenIn.safeTransferFrom(msg.sender, address(this), odosParams.tokenAmountIn);
     }
 

@@ -369,9 +369,9 @@ contract UIHelperTest is Test {
     odos.setMockOutput(address(fundingToken), 100 * 1e18);
 
     UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
-      tokenIn: IERC20(address(0)),
+      tokenIn: IERC20(fundingToken),
       tokenAmountIn: 0,
-      odosTokenIn: IERC20(address(0)),
+      odosTokenIn: IERC20(token),
       odosTokenAmountIn: 0,
       minOdosTokenAmountOut: 0,
       odosTokenOut: fundingToken,

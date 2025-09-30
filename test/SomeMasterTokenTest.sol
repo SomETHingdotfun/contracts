@@ -16,8 +16,8 @@ contract SomeMasterTokenTest is Test {
 
   // Constants
   uint256 constant TOTAL_SUPPLY = 1_000_000_000 * 1e18; // 1 billion tokens
-  string constant TOKEN_NAME = "Nothing.fun";
-  string constant TOKEN_SYMBOL = "NOTH";
+  string constant TOKEN_NAME = "Something.fun";
+  string constant TOKEN_SYMBOL = "SOME";
   uint8 constant TOKEN_DECIMALS = 18;
 
   event Transfer(address indexed from, address indexed to, uint256 value);

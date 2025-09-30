@@ -22,14 +22,20 @@ pragma solidity ^0.8.0;
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {ERC721EnumerableUpgradeable} from
   "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
+
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {SomeToken} from "contracts/SomeToken.sol";
 import {ICLMMAdapter} from "contracts/interfaces/ICLMMAdapter.sol";
-
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 
-abstract contract TokenLaunchpad is ITokenLaunchpad, OwnableUpgradeable, ERC721EnumerableUpgradeable {
+abstract contract TokenLaunchpad is
+  ITokenLaunchpad,
+  OwnableUpgradeable,
+  ERC721EnumerableUpgradeable,
+  ReentrancyGuardUpgradeable
+{
   using SafeERC20 for IERC20;
 
   ICLMMAdapter public adapter;
@@ -53,12 +59,14 @@ abstract contract TokenLaunchpad is ITokenLaunchpad, OwnableUpgradeable, ERC721E
     cron = _owner;
     __Ownable_init(_owner);
     __ERC721_init("Something.fun", "somETHing");
+    __ReentrancyGuard_init();
   }
 
   /// @inheritdoc ITokenLaunchpad
   function createAndBuy(CreateParams memory p, address expected, uint256 amount)
     external
     payable
+    nonReentrant
     returns (address, uint256, uint256, uint256)
   {
     SomeToken token;
@@ -120,7 +128,7 @@ abstract contract TokenLaunchpad is ITokenLaunchpad, OwnableUpgradeable, ERC721E
   }
 
   /// @inheritdoc ITokenLaunchpad
-  function claimFees(IERC20 _token) external {
+  function claimFees(IERC20 _token) external nonReentrant {
     address token1 = address(fundingToken);
     (uint256 fee0, uint256 fee1) = adapter.claimFees(address(_token));
 
