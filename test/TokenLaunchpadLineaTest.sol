@@ -131,6 +131,7 @@ contract TokenLaunchpadLineaTest is Test {
     vm.deal(whale, 1000 ether);
     vm.deal(creator, 1000 ether);
     vm.deal(address(this), 100 ether);
+    deal(address(something), address(launchpad), 1000e18);
   }
 
   // Test initialization
@@ -151,11 +152,13 @@ contract TokenLaunchpadLineaTest is Test {
     deal(address(something), creator, 1e18);
     vm.startPrank(creator);
 
-    something.approve(address(launchpad), 1e18);
+    address computedAddress = _calculateExpectedAddress(salt, creator, "Test Token", "TEST");
+    assertEq(computedAddress != address(0), true);
 
+    vm.startPrank(creator);
     (address token,,,) = launchpad.createAndBuy(
       ITokenLaunchpad.CreateParams({salt: salt, name: "Test Token", symbol: "TEST", metadata: "Test Metadata"}),
-      address(0),
+      computedAddress,
       0
     );
 
@@ -183,9 +186,10 @@ contract TokenLaunchpadLineaTest is Test {
 
     something.approve(address(launchpad), 101e18);
 
+    address computedAddress = _calculateExpectedAddress(salt, creator, "Test Token", "TEST");
     (address token, uint256 received,,) = launchpad.createAndBuy(
       ITokenLaunchpad.CreateParams({salt: salt, name: "Test Token", symbol: "TEST", metadata: "Test Metadata"}),
-      address(0),
+      computedAddress,
       100e18
     );
 
@@ -464,15 +468,22 @@ contract TokenLaunchpadLineaTest is Test {
     uint256 maxAttempts = 100;
 
     for (uint256 i = 0; i < maxAttempts; i++) {
-      bytes32 salt = keccak256(abi.encode(i));
-      bytes32 saltUser = keccak256(abi.encode(salt, _creator, _name, _symbol));
+      // Use a more unique salt generation that includes iteration-specific data
+      // This ensures each call gets a different salt even in the same block
+      bytes32 salt = keccak256(abi.encode(
+        i, 
+        block.timestamp, 
+        block.number
+      ));
 
-      // Calculate CREATE2 address
-      bytes memory creationCode = abi.encodePacked(bytecode, abi.encode(_name, _symbol));
-      bytes32 hash = keccak256(abi.encodePacked(bytes1(0xff), address(launchpad), saltUser, keccak256(creationCode)));
-      address target = address(uint160(uint256(hash)));
+      // Use the launchpad's computeTokenAddress method
+      (address computedAddress, bool isValid) = launchpad.computeTokenAddress(
+        ITokenLaunchpad.CreateParams({salt: salt, name: _name, symbol: _symbol, metadata: ""}),
+        address(_quoteToken),
+        _creator
+      );
 
-      if (target < address(_quoteToken)) return salt;
+      if (isValid) return salt;
     }
 
     revert(

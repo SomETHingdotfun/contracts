@@ -26,6 +26,7 @@ import {ERC721EnumerableUpgradeable} from
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 import {SomeToken} from "contracts/SomeToken.sol";
 import {ICLMMAdapter} from "contracts/interfaces/ICLMMAdapter.sol";
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
@@ -62,6 +63,17 @@ abstract contract TokenLaunchpad is
     __ReentrancyGuard_init();
   }
 
+  function computeTokenAddress(CreateParams memory p, address _fundingToken, address _caller) external view returns (address, bool) {
+    bytes32 salt = keccak256(abi.encode(p.salt, _caller, p.name, p.symbol));
+    bytes memory bytecode = abi.encodePacked(
+      type(SomeToken).creationCode,
+      abi.encode(p.name, p.symbol)
+    );
+    bytes32 bytecodeHash = keccak256(bytecode);
+    address computedAddress = Create2.computeAddress(salt, bytecodeHash, address(this));
+    return (computedAddress, computedAddress < _fundingToken);
+  }
+
   /// @inheritdoc ITokenLaunchpad
   function createAndBuy(CreateParams memory p, address expected, uint256 amount)
     external
@@ -72,8 +84,15 @@ abstract contract TokenLaunchpad is
     SomeToken token;
 
     {
+      //Deploy using CREATE2
       bytes32 salt = keccak256(abi.encode(p.salt, msg.sender, p.name, p.symbol));
-      token = new SomeToken{salt: salt}(p.name, p.symbol);
+      bytes memory bytecode = abi.encodePacked(
+        type(SomeToken).creationCode,
+        abi.encode(p.name, p.symbol)
+      );
+      address tokenAddress = Create2.deploy(0, salt, bytecode);
+      token = SomeToken(tokenAddress);
+      
       require(expected == address(0) || address(token) == expected, "Invalid token address");
 
       tokenToNftId[token] = tokens.length;
