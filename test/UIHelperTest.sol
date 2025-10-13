@@ -4,11 +4,13 @@ pragma solidity ^0.8.0;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 import {UIHelper} from "contracts/launchpad/clmm/UIHelper.sol";
+import {SomeProxy} from "contracts/SomeProxy.sol";
 
 import {Test} from "lib/forge-std/src/Test.sol";
 import {TestableTokenLaunchpad} from "test/TokenLaunchpadTest.sol";
 import {MockCLMMAdapter} from "test/TokenLaunchpadTest.sol";
 import {MockERC20} from "test/mocks/MockERC20.sol";
+import {IUIHelper} from "contracts/interfaces/IUIHelper.sol";
 
 import "forge-std/console.sol";
 
@@ -111,20 +113,35 @@ contract UIHelperTest is Test {
 
   address owner;
   address user1;
+  address proxyAdmin;
 
   function setUp() public {
     owner = makeAddr("owner");
     user1 = makeAddr("user1");
+    proxyAdmin = makeAddr("proxyAdmin");
 
     // Deploy mock contracts
     fundingToken = new MockERC20("Funding Token", "FUND", 18);
     adapter = new MockCLMMAdapter();
-    launchpad = new TestableTokenLaunchpad();
     weth = new MockWETH9();
     odos = new MockODOS();
-
-    // Initialize the launchpad
-    launchpad.initialize(owner, address(fundingToken), address(adapter));
+    
+    // Deploy implementation contract
+    TestableTokenLaunchpad launchpadImpl = new TestableTokenLaunchpad();
+    
+    // Deploy proxy with initialization
+    bytes memory initData = abi.encodeWithSignature(
+      "initialize(address,address,address)",
+      owner,
+      address(fundingToken),
+      address(adapter)
+    );
+    SomeProxy launchpadProxy = new SomeProxy(
+      address(launchpadImpl),
+      proxyAdmin,
+      initData
+    );
+    launchpad = TestableTokenLaunchpad(payable(address(launchpadProxy)));
 
     // Deploy UIHelper
     uiHelper = new UIHelper(address(weth), address(odos), address(launchpad));
@@ -156,7 +173,7 @@ contract UIHelperTest is Test {
       metadata: string(abi.encodePacked("ipfs://", salt))
     });
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
       odosTokenIn: fundingToken,
@@ -194,7 +211,7 @@ contract UIHelperTest is Test {
       metadata: "ipfs://test"
     });
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: IERC20(address(0)), // ETH
       tokenAmountIn: 0,
       odosTokenIn: fundingToken,
@@ -223,7 +240,7 @@ contract UIHelperTest is Test {
       metadata: "ipfs://test2"
     });
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: fundingToken,
       tokenAmountIn: 100 * 1e18,
       odosTokenIn: fundingToken,
@@ -256,7 +273,7 @@ contract UIHelperTest is Test {
     // Set up mock ODOS output
     odos.setMockOutput(address(fundingToken), 100 * 1e18);
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
       odosTokenIn: IERC20(address(0)),
@@ -278,7 +295,7 @@ contract UIHelperTest is Test {
   function test_buyWithExactInputWithOdos_withToken() public {
     (address token,) = _createTokenInLaunchpad("test-buy-token", "Buy Token Token", "BUYTOKEN");
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: fundingToken,
       tokenAmountIn: 100 * 1e18,
       odosTokenIn: fundingToken,
@@ -290,7 +307,7 @@ contract UIHelperTest is Test {
 
     vm.startPrank(user1);
     fundingToken.approve(address(uiHelper), 100 * 1e18);
-    uint256 amountOut = uiHelper.buyWithExactInputWithOdos(odosParams, IERC20(token), 0);
+    uint256 amountOut = uiHelper.buyWithExactInputWithOdos(odosParams, IERC20(token), 0, 0);
     vm.stopPrank();
 
     assertEq(amountOut, adapter.mockSwapAmountOut());
@@ -302,7 +319,7 @@ contract UIHelperTest is Test {
     // Set up mock ODOS output
     odos.setMockOutput(address(fundingToken), 100 * 1e18);
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
       odosTokenIn: IERC20(address(0)),
@@ -313,7 +330,7 @@ contract UIHelperTest is Test {
     });
 
     vm.prank(user1);
-    uint256 amountOut = uiHelper.buyWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), 0);
+    uint256 amountOut = uiHelper.buyWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), 0, 0);
   }
 
   function test_buyWithExactInputWithOdos_withInvalidMinAmountOut() public {
@@ -322,7 +339,7 @@ contract UIHelperTest is Test {
     // Set up mock ODOS output with insufficient amount
     odos.setMockOutput(address(fundingToken), 30 * 1e18);
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
       odosTokenIn: IERC20(address(0)),
@@ -333,8 +350,10 @@ contract UIHelperTest is Test {
     });
 
     vm.prank(user1);
-    vm.expectRevert("!minAmountIn");
-    uiHelper.buyWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), 0);
+    vm.expectRevert(
+      abi.encodeWithSelector(IUIHelper.InsufficientOutputAmount.selector, 0, 50 * 1e18)
+    );
+    uiHelper.buyWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), 0, 0);
   }
 
   // ============ sellWithExactInputWithOdos Tests ============
@@ -342,7 +361,7 @@ contract UIHelperTest is Test {
   function test_sellWithExactInputWithOdos_basic() public {
     (address token,) = _createTokenInLaunchpad("test-sell-basic", "Sell Basic Token", "SELLBASIC");
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
       odosTokenIn: fundingToken,
@@ -356,7 +375,7 @@ contract UIHelperTest is Test {
 
     vm.startPrank(user1);
     IERC20(token).approve(address(uiHelper), amountToSell);
-    uint256 amountSwapOut = uiHelper.sellWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), amountToSell);
+    uint256 amountSwapOut = uiHelper.sellWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), amountToSell, 0);
     vm.stopPrank();
 
     assertEq(amountSwapOut, adapter.mockSwapAmountOut());
@@ -368,7 +387,7 @@ contract UIHelperTest is Test {
     // Set up mock ODOS output
     odos.setMockOutput(address(fundingToken), 100 * 1e18);
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: IERC20(fundingToken),
       tokenAmountIn: 0,
       odosTokenIn: IERC20(token),
@@ -382,7 +401,7 @@ contract UIHelperTest is Test {
 
     vm.startPrank(user1);
     IERC20(token).approve(address(uiHelper), amountToSell);
-    uint256 amountSwapOut = uiHelper.sellWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), amountToSell);
+    uint256 amountSwapOut = uiHelper.sellWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), amountToSell, 0);
     vm.stopPrank();
 
     assertEq(amountSwapOut, adapter.mockSwapAmountOut());
@@ -401,7 +420,7 @@ contract UIHelperTest is Test {
       metadata: "ipfs://purge"
     });
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
       odosTokenIn: fundingToken,
@@ -433,7 +452,7 @@ contract UIHelperTest is Test {
       metadata: "ipfs://purge2"
     });
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
       odosTokenIn: fundingToken,
@@ -460,7 +479,7 @@ contract UIHelperTest is Test {
       metadata: "ipfs://purge3"
     });
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
       odosTokenIn: fundingToken,
@@ -484,7 +503,7 @@ contract UIHelperTest is Test {
 
     (address token,) = _createTokenInLaunchpad("test-odos-fail", "ODOS Fail Token", "ODOSFAIL");
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
       odosTokenIn: IERC20(address(0)),
@@ -495,8 +514,8 @@ contract UIHelperTest is Test {
     });
 
     vm.prank(user1);
-    vm.expectRevert("Odos call failed");
-    uiHelper.buyWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), 0);
+    vm.expectRevert(IUIHelper.OdosCallFailed.selector);
+    uiHelper.buyWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), 0, 0);
   }
 
   // ============ Receive Ether Test ============
@@ -517,7 +536,7 @@ contract UIHelperTest is Test {
     // First create a token in the launchpad so claimFees works
     (address token,) = _createTokenInLaunchpad("fuzz-buy", "Fuzz Buy Token", "FUZZBUY");
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: fundingToken,
       tokenAmountIn: tokenAmount,
       odosTokenIn: fundingToken,
@@ -529,7 +548,7 @@ contract UIHelperTest is Test {
 
     vm.startPrank(user1);
     fundingToken.approve(address(uiHelper), tokenAmount);
-    uint256 amountOut = uiHelper.buyWithExactInputWithOdos(odosParams, IERC20(token), 0);
+    uint256 amountOut = uiHelper.buyWithExactInputWithOdos(odosParams, IERC20(token), 0, 0);
     vm.stopPrank();
 
     // Verify amount out
@@ -548,7 +567,7 @@ contract UIHelperTest is Test {
         metadata: string(abi.encodePacked("ipfs://multi", i))
       });
 
-      UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
         tokenIn: IERC20(address(0)),
         tokenAmountIn: 0,
         odosTokenIn: fundingToken,
@@ -574,7 +593,7 @@ contract UIHelperTest is Test {
 
     // Perform multiple buy operations
     for (uint256 i = 0; i < 3; i++) {
-      UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
         tokenIn: fundingToken,
         tokenAmountIn: 100 * 1e18,
         odosTokenIn: fundingToken,
@@ -586,7 +605,7 @@ contract UIHelperTest is Test {
 
       vm.startPrank(user1);
       fundingToken.approve(address(uiHelper), 100 * 1e18);
-      uint256 amountOut = uiHelper.buyWithExactInputWithOdos(odosParams, IERC20(token), 0);
+      uint256 amountOut = uiHelper.buyWithExactInputWithOdos(odosParams, IERC20(token), 0, 0);
       vm.stopPrank();
 
       assertEq(amountOut, adapter.mockSwapAmountOut());
@@ -603,7 +622,7 @@ contract UIHelperTest is Test {
       metadata: "ipfs://zero"
     });
 
-    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+    IUIHelper.OdosParams memory odosParams = IUIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
       odosTokenIn: IERC20(address(0)),

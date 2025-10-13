@@ -6,6 +6,7 @@ import {SomeToken} from "contracts/SomeToken.sol";
 import {ICLMMAdapter} from "contracts/interfaces/ICLMMAdapter.sol";
 import {IERC20, ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 import {TokenLaunchpadLinea} from "contracts/launchpad/TokenLaunchpadLinea.sol";
+import {SomeProxy} from "contracts/SomeProxy.sol";
 
 import {Test} from "lib/forge-std/src/Test.sol";
 import {MockERC20} from "test/mocks/MockERC20.sol";
@@ -45,20 +46,24 @@ contract MockCLMMAdapter is ICLMMAdapter {
     return pool;
   }
 
-  function swapWithExactOutput(IERC20 _tokenIn, IERC20 _tokenOut, uint256 _amountOut, uint256 _maxAmountIn)
-    external
-    override
-    returns (uint256 amountIn)
-  {
+  function swapWithExactOutput(
+    IERC20 _tokenIn,
+    IERC20 _tokenOut,
+    uint256 _amountOut,
+    uint256 _maxAmountIn,
+    uint160 _sqrtPriceLimitX96
+  ) external override returns (uint256 amountIn) {
     // Mock implementation - return the mock amount
     return mockSwapAmountIn;
   }
 
-  function swapWithExactInput(IERC20 _tokenIn, IERC20 _tokenOut, uint256 _amountIn, uint256 _minAmountOut)
-    external
-    override
-    returns (uint256 amountOut)
-  {
+  function swapWithExactInput(
+    IERC20 _tokenIn,
+    IERC20 _tokenOut,
+    uint256 _amountIn,
+    uint256 _minAmountOut,
+    uint160 _sqrtPriceLimitX96
+  ) external override returns (uint256 amountOut) {
     // Mock implementation - return the mock amount
     return mockSwapAmountOut;
   }
@@ -99,6 +104,7 @@ contract TokenLaunchpadLineaTest is Test {
   address owner = makeAddr("owner");
   address whale = makeAddr("whale");
   address creator = makeAddr("creator");
+  address proxyAdmin = makeAddr("proxyAdmin");
   address etherxTreasury = 0x8EfeFDBe3f3f7D48b103CD220d634CBF1d0Ae1a6;
   address somethingTreasury = 0x8EfeFDBe3f3f7D48b103CD220d634CBF1d0Ae1a6; // Same as etherxTreasury in the contract
 
@@ -106,10 +112,23 @@ contract TokenLaunchpadLineaTest is Test {
     // Deploy mock contracts
     something = new MockERC20("SomeETHing", "somETHing", 18);
     adapter = new MockCLMMAdapter();
-    launchpad = new TokenLaunchpadLinea();
-
-    // Initialize the launchpad
-    launchpad.initialize(owner, address(something), address(adapter));
+    
+    // Deploy implementation contract
+    TokenLaunchpadLinea launchpadImpl = new TokenLaunchpadLinea();
+    
+    // Deploy proxy with initialization
+    bytes memory initData = abi.encodeWithSignature(
+      "initialize(address,address,address)",
+      owner,
+      address(something),
+      address(adapter)
+    );
+    SomeProxy launchpadProxy = new SomeProxy(
+      address(launchpadImpl),
+      proxyAdmin,
+      initData
+    );
+    launchpad = TokenLaunchpadLinea(payable(address(launchpadProxy)));
 
     // Set launch ticks
     vm.prank(owner);
@@ -154,8 +173,7 @@ contract TokenLaunchpadLineaTest is Test {
 
     address computedAddress = _calculateExpectedAddress(salt, creator, "Test Token", "TEST");
     assertEq(computedAddress != address(0), true);
-
-    vm.startPrank(creator);
+    
     (address token,,,) = launchpad.createAndBuy(
       ITokenLaunchpad.CreateParams({salt: salt, name: "Test Token", symbol: "TEST", metadata: "Test Metadata"}),
       computedAddress,
@@ -445,7 +463,7 @@ contract TokenLaunchpadLineaTest is Test {
     // Use wrong expected address
     address wrongExpected = makeAddr("wrong");
 
-    vm.expectRevert("Invalid token address");
+    vm.expectRevert(ITokenLaunchpad.InvalidTokenAddress.selector);
     launchpad.createAndBuy(
       ITokenLaunchpad.CreateParams({salt: salt, name: "Test Token", symbol: "TEST", metadata: "Test Metadata"}),
       wrongExpected,

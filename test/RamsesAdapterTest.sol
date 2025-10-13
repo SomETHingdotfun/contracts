@@ -9,6 +9,7 @@ import {ICLSwapRouter} from "contracts/interfaces/thirdparty/ICLSwapRouter.sol";
 import {IClPool} from "contracts/interfaces/thirdparty/IClPool.sol";
 import {IClPoolFactory} from "contracts/interfaces/thirdparty/IClPoolFactory.sol";
 import {RamsesAdapter} from "contracts/launchpad/clmm/adapters/RamsesAdapter.sol";
+import {SomeProxy} from "contracts/SomeProxy.sol";
 
 import {Test} from "lib/forge-std/src/Test.sol";
 import {MockERC20} from "test/mocks/MockERC20.sol";
@@ -317,11 +318,13 @@ contract RamsesAdapterTest is Test {
   address owner;
   address user1;
   address user2;
+  address proxyAdmin;
 
   function setUp() public {
     owner = makeAddr("owner");
     user1 = makeAddr("user1");
     user2 = makeAddr("user2");
+    proxyAdmin = makeAddr("proxyAdmin");
 
     // Deploy mock contracts
     token0 = new MockERC20("Token0", "TK0", 18);
@@ -332,9 +335,23 @@ contract RamsesAdapterTest is Test {
     swapRouter = new MockCLSwapRouter();
     launchpad = new MockLaunchpad(address(fundingToken));
 
-    // Deploy RamsesAdapter
-    adapter = new RamsesAdapter();
-    adapter.initialize(address(launchpad), address(swapRouter), address(nftPositionManager), address(poolFactory));
+    // Deploy RamsesAdapter implementation
+    RamsesAdapter adapterImpl = new RamsesAdapter();
+    
+    // Deploy proxy with initialization
+    bytes memory initData = abi.encodeWithSignature(
+      "initialize(address,address,address,address)",
+      address(launchpad),
+      address(swapRouter),
+      address(nftPositionManager),
+      address(poolFactory)
+    );
+    SomeProxy adapterProxy = new SomeProxy(
+      address(adapterImpl),
+      proxyAdmin,
+      initData
+    );
+    adapter = RamsesAdapter(payable(address(adapterProxy)));
 
     // Fund users with tokens
     token0.mint(user1, 10_000 * 1e18);
@@ -423,7 +440,7 @@ contract RamsesAdapterTest is Test {
 
     // Try to call from non-launchpad address
     vm.prank(user1);
-    vm.expectRevert("!launchpad");
+    vm.expectRevert(ICLMMAdapter.Unauthorized.selector);
     adapter.addSingleSidedLiquidity(params);
   }
 
@@ -469,7 +486,7 @@ contract RamsesAdapterTest is Test {
 
   function test_claimFees_onlyLaunchpad() public {
     vm.prank(user1);
-    vm.expectRevert("!launchpad");
+    vm.expectRevert(ICLMMAdapter.Unauthorized.selector);
     adapter.claimFees(address(token0));
   }
 
@@ -486,9 +503,9 @@ contract RamsesAdapterTest is Test {
     ICLMMAdapter.AddLiquidityParams memory params2 = ICLMMAdapter.AddLiquidityParams({
       tokenBase: token1,
       tokenQuote: fundingToken,
-      tick0: -500,
-      tick1: 500,
-      tick2: 1500
+      tick0: -600,
+      tick1: 400,
+      tick2: 1400
     });
 
     // Set mock mint results for first token
@@ -530,9 +547,9 @@ contract RamsesAdapterTest is Test {
     ICLMMAdapter.AddLiquidityParams memory params2 = ICLMMAdapter.AddLiquidityParams({
       tokenBase: token1,
       tokenQuote: fundingToken,
-      tick0: -500,
-      tick1: 500,
-      tick2: 1500
+      tick0: -600,
+      tick1: 400,
+      tick2: 1400
     });
 
     // Set mock mint results and add liquidity
@@ -662,20 +679,20 @@ contract RamsesAdapterTest is Test {
 
     // Perform the swap
     vm.prank(user1);
-    uint256 actualAmountIn = adapter.swapWithExactOutput(token0, token1, amountOut, maxAmountIn);
+    uint256 actualAmountIn = adapter.swapWithExactOutput(token0, token1, amountOut, maxAmountIn, 0);
 
     // Verify the swap was successful
     assertEq(actualAmountIn, expectedAmountIn);
 
-    // The adapter refunds ALL remaining tokens back to the user, so:
+    // The adapter refunds only the unused portion from what the user sent:
     // - User transfers maxAmountIn to adapter
     // - Adapter uses expectedAmountIn for the swap
-    // - Adapter refunds the remaining tokens (maxAmountIn - expectedAmountIn) back to user
-    // - User also gets back the adapter's original balance
-    uint256 expectedUserBalance = initialToken0Balance - expectedAmountIn + initialAdapterBalance;
+    // - Adapter refunds (maxAmountIn - expectedAmountIn) back to user
+    // - Adapter keeps its initial balance
+    uint256 expectedUserBalance = initialToken0Balance - expectedAmountIn;
     assertEq(token0.balanceOf(user1), expectedUserBalance);
 
-    // Verify the adapter has no remaining tokens (all refunded)
-    assertEq(token0.balanceOf(address(adapter)), 0);
+    // Verify the adapter still has its initial balance
+    assertEq(token0.balanceOf(address(adapter)), initialAdapterBalance);
   }
 }

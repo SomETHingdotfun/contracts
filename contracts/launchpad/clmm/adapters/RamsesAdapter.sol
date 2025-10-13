@@ -59,7 +59,9 @@ interface IRamsesPoolFactory {
 
 contract RamsesAdapter is BaseV3Adapter {
   using SafeERC20 for IERC20;
-
+  constructor() {
+    _disableInitializers();
+  }
   function initialize(address _launchpad, address _swapRouter, address _nftPositionManager, address _clPoolFactory)
     external
     initializer
@@ -72,8 +74,9 @@ contract RamsesAdapter is BaseV3Adapter {
     override
     returns (uint256 tokenId)
   {
+    uint256 initialBalance = _token0.balanceOf(address(this));
     _token0.safeTransferFrom(msg.sender, address(this), _amount0);
-    _token0.approve(address(nftPositionManager), _amount0);
+    _token0.forceApprove(address(nftPositionManager), _amount0);
 
     // mint the position
     INonfungiblePositionManagerRamses.MintParams memory params = INonfungiblePositionManagerRamses.MintParams({
@@ -87,10 +90,13 @@ contract RamsesAdapter is BaseV3Adapter {
       amount0Min: 0,
       amount1Min: 0,
       recipient: _me,
-      deadline: block.timestamp
+      deadline: block.timestamp + 60
     });
 
     (tokenId,,,) = INonfungiblePositionManagerRamses(address(nftPositionManager)).mint(params);
+    
+    // Refund any unused tokens back to the caller
+    _refundTokens(_token0, initialBalance);
   }
 
   function _collectFees(uint256 _nftId) internal override returns (uint256 fee0, uint256 fee1) {

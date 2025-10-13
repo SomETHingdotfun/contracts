@@ -53,6 +53,10 @@ abstract contract TokenLaunchpad is
 
   receive() external payable {}
 
+  constructor() {
+    _disableInitializers();
+  }
+
   /// @inheritdoc ITokenLaunchpad
   function initialize(address _owner, address _fundingToken, address _adapter) external initializer {
     fundingToken = IERC20(_fundingToken);
@@ -93,12 +97,12 @@ abstract contract TokenLaunchpad is
       address tokenAddress = Create2.deploy(0, salt, bytecode);
       token = SomeToken(tokenAddress);
       
-      require(expected == address(0) || address(token) == expected, "Invalid token address");
+      if (expected != address(0) && address(token) != expected) revert InvalidTokenAddress();
 
       tokenToNftId[token] = tokens.length;
       tokens.push(token);
 
-      token.approve(address(adapter), type(uint256).max);
+      IERC20(address(token)).forceApprove(address(adapter), type(uint256).max);
       address pool = adapter.addSingleSidedLiquidity(
         ICLMMAdapter.AddLiquidityParams({
           tokenBase: token,
@@ -111,18 +115,18 @@ abstract contract TokenLaunchpad is
       emit TokenLaunched(token, address(adapter), pool, p);
     }
 
-    _mint(msg.sender, tokenToNftId[token]);
+    _safeMint(msg.sender, tokenToNftId[token]);
 
-    fundingToken.approve(address(adapter), type(uint256).max);
+    fundingToken.forceApprove(address(adapter), type(uint256).max);
 
     // buy 1 token to register the token on tools like dexscreener
-    uint256 swapped = adapter.swapWithExactInput(fundingToken, token, 1 ether, 0);
+    uint256 swapped = adapter.swapWithExactInput(fundingToken, token, 1 ether, 0, 0);
 
     // if the user wants to buy more tokens, they can do so
     uint256 received;
     if (amount > 0) {
-      fundingToken.transferFrom(msg.sender, address(this), amount);
-      received = adapter.swapWithExactInput(fundingToken, token, amount, 0);
+      fundingToken.safeTransferFrom(msg.sender, address(this), amount);
+      received = adapter.swapWithExactInput(fundingToken, token, amount, 0, 0);
     }
 
     // refund any remaining tokens
@@ -137,7 +141,7 @@ abstract contract TokenLaunchpad is
   }
 
   function setLaunchTicks(int24 _launchTick, int24 _graduationTick, int24 _upperMaxTick) external {
-    require(msg.sender == cron || msg.sender == owner(), "!cron");
+    if (msg.sender != cron && msg.sender != owner()) revert Unauthorized();
     _updateLaunchTicks(_launchTick, _graduationTick, _upperMaxTick);
   }
 

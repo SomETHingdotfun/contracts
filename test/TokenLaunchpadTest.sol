@@ -7,6 +7,7 @@ import {SomeToken} from "contracts/SomeToken.sol";
 import {ICLMMAdapter} from "contracts/interfaces/ICLMMAdapter.sol";
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 import {TokenLaunchpad} from "contracts/launchpad/TokenLaunchpad.sol";
+import {SomeProxy} from "contracts/SomeProxy.sol";
 
 import {Test} from "lib/forge-std/src/Test.sol";
 import {MockERC20} from "test/mocks/MockERC20.sol";
@@ -46,11 +47,13 @@ contract MockCLMMAdapter is ICLMMAdapter {
     return pool;
   }
 
-  function swapWithExactOutput(IERC20 _tokenIn, IERC20 _tokenOut, uint256 _amountOut, uint256 _maxAmountIn)
-    external
-    override
-    returns (uint256 amountIn)
-  {
+  function swapWithExactOutput(
+    IERC20 _tokenIn,
+    IERC20 _tokenOut,
+    uint256 _amountOut,
+    uint256 _maxAmountIn,
+    uint160 _sqrtPriceLimitX96
+  ) external override returns (uint256 amountIn) {
     // Transfer input tokens from caller
     _tokenIn.transferFrom(msg.sender, address(this), _maxAmountIn);
     // For testing, we'll skip the actual transfer of output tokens
@@ -58,11 +61,13 @@ contract MockCLMMAdapter is ICLMMAdapter {
     return _maxAmountIn;
   }
 
-  function swapWithExactInput(IERC20 _tokenIn, IERC20 _tokenOut, uint256 _amountIn, uint256 _minAmountOut)
-    external
-    override
-    returns (uint256 amountOut)
-  {
+  function swapWithExactInput(
+    IERC20 _tokenIn,
+    IERC20 _tokenOut,
+    uint256 _amountIn,
+    uint256 _minAmountOut,
+    uint160 _sqrtPriceLimitX96
+  ) external override returns (uint256 amountOut) {
     // Transfer input tokens from caller
     _tokenIn.transferFrom(msg.sender, address(this), _amountIn);
 
@@ -136,6 +141,7 @@ contract TokenLaunchpadTest is Test {
   address user1;
   address user2;
   address treasury;
+  address proxyAdmin;
 
   function setUp() public {
     owner = makeAddr("owner");
@@ -143,14 +149,28 @@ contract TokenLaunchpadTest is Test {
     user1 = makeAddr("user1");
     user2 = makeAddr("user2");
     treasury = makeAddr("treasury");
+    proxyAdmin = makeAddr("proxyAdmin");
 
     // Deploy mock contracts
     fundingToken = new MockERC20("Funding Token", "FUND", 18);
     adapter = new MockCLMMAdapter();
-    launchpad = new TestableTokenLaunchpad();
-
-    // Initialize the launchpad
-    launchpad.initialize(owner, address(fundingToken), address(adapter));
+    
+    // Deploy implementation contract
+    TestableTokenLaunchpad launchpadImpl = new TestableTokenLaunchpad();
+    
+    // Deploy proxy with initialization
+    bytes memory initData = abi.encodeWithSignature(
+      "initialize(address,address,address)",
+      owner,
+      address(fundingToken),
+      address(adapter)
+    );
+    SomeProxy launchpadProxy = new SomeProxy(
+      address(launchpadImpl),
+      proxyAdmin,
+      initData
+    );
+    launchpad = TestableTokenLaunchpad(payable(address(launchpadProxy)));
 
     // Set up cron
     vm.prank(owner);
@@ -302,7 +322,7 @@ contract TokenLaunchpadTest is Test {
     address wrongExpected = makeAddr("wrong");
 
     vm.prank(user1);
-    vm.expectRevert("Invalid token address");
+    vm.expectRevert(ITokenLaunchpad.InvalidTokenAddress.selector);
     launchpad.createAndBuy(params, wrongExpected, 0);
   }
 
@@ -352,7 +372,7 @@ contract TokenLaunchpadTest is Test {
 
     // Test random user cannot set ticks
     vm.prank(user1);
-    vm.expectRevert("!cron");
+    vm.expectRevert(ITokenLaunchpad.Unauthorized.selector);
     launchpad.setLaunchTicks(-300, -150, 300);
   }
 

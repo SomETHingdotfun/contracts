@@ -63,36 +63,43 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
   }
 
   /// @inheritdoc ICLMMAdapter
-  function swapWithExactOutput(IERC20 _tokenIn, IERC20 _tokenOut, uint256 _amountOut, uint256 _maxAmountIn)
-    external
-    virtual
-    returns (uint256 amountIn)
-  {
+  function swapWithExactOutput(
+    IERC20 _tokenIn,
+    IERC20 _tokenOut,
+    uint256 _amountOut,
+    uint256 _maxAmountIn,
+    uint160 _sqrtPriceLimitX96
+  ) external virtual returns (uint256 amountIn) {
+    uint256 initialBalance = _tokenIn.balanceOf(address(this));
     _tokenIn.safeTransferFrom(msg.sender, address(this), _maxAmountIn);
-    _tokenIn.approve(address(swapRouter), type(uint256).max);
+    _tokenIn.forceApprove(address(swapRouter), type(uint256).max);
     amountIn = swapRouter.exactOutputSingle(
       ICLSwapRouter.ExactOutputSingleParams({
         tokenIn: address(_tokenIn),
         tokenOut: address(_tokenOut),
         amountOut: _amountOut,
         recipient: msg.sender,
-        deadline: block.timestamp,
+        deadline: block.timestamp + 60,
         tickSpacing: TICK_SPACING,
         amountInMaximum: _maxAmountIn,
-        sqrtPriceLimitX96: 0
+        sqrtPriceLimitX96: _sqrtPriceLimitX96
       })
     );
-    _refundTokens(_tokenIn);
+    _refundTokens(_tokenIn, initialBalance);
+    
+    emit SwapExecutedExactOutput(address(_tokenIn), address(_tokenOut), amountIn, _amountOut, msg.sender);
   }
 
   /// @inheritdoc ICLMMAdapter
-  function swapWithExactInput(IERC20 _tokenIn, IERC20 _tokenOut, uint256 _amountIn, uint256 _minAmountOut)
-    external
-    virtual
-    returns (uint256 amountOut)
-  {
+  function swapWithExactInput(
+    IERC20 _tokenIn,
+    IERC20 _tokenOut,
+    uint256 _amountIn,
+    uint256 _minAmountOut,
+    uint160 _sqrtPriceLimitX96
+  ) external virtual returns (uint256 amountOut) {
     _tokenIn.safeTransferFrom(msg.sender, address(this), _amountIn);
-    _tokenIn.approve(address(swapRouter), type(uint256).max);
+    _tokenIn.forceApprove(address(swapRouter), type(uint256).max);
 
     amountOut = swapRouter.exactInputSingle(
       ICLSwapRouter.ExactInputSingleParams({
@@ -100,17 +107,31 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
         tokenOut: address(_tokenOut),
         amountIn: _amountIn,
         recipient: msg.sender,
-        deadline: block.timestamp,
+        deadline: block.timestamp + 60,
         tickSpacing: TICK_SPACING,
         amountOutMinimum: _minAmountOut,
-        sqrtPriceLimitX96: 0
+        sqrtPriceLimitX96: _sqrtPriceLimitX96
       })
     );
+    
+    emit SwapExecutedExactInput(address(_tokenIn), address(_tokenOut), _amountIn, amountOut, msg.sender);
   }
 
   /// @inheritdoc ICLMMAdapter
   function addSingleSidedLiquidity(AddLiquidityParams memory _params) external returns (address) {
-    require(msg.sender == launchpad, "!launchpad");
+    if (msg.sender != launchpad) revert Unauthorized();
+
+    // Validate tick ordering
+    if (!(_params.tick0 < _params.tick1 && _params.tick1 < _params.tick2)) revert InvalidTickOrdering();
+
+    // Validate tick spacing alignment
+    if (_params.tick0 % TICK_SPACING != 0) revert TickNotAligned(_params.tick0);
+    if (_params.tick1 % TICK_SPACING != 0) revert TickNotAligned(_params.tick1);
+    if (_params.tick2 % TICK_SPACING != 0) revert TickNotAligned(_params.tick2);
+
+    // Validate tick range
+    if (_params.tick0 <= TickMath.MIN_TICK) revert Tick0OutOfRange(_params.tick0, TickMath.MIN_TICK);
+    if (_params.tick2 >= TickMath.MAX_TICK) revert Tick2OutOfRange(_params.tick2, TickMath.MAX_TICK);
 
     uint160 sqrtPriceX96Launch = TickMath.getSqrtPriceAtTick(_params.tick0 - 1);
 
@@ -124,12 +145,22 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
     tokenToLockId[IERC20(_params.tokenBase)][0] = tokenId0;
     tokenToLockId[IERC20(_params.tokenBase)][1] = tokenId1;
 
+    emit LiquidityAdded(
+      address(_params.tokenBase),
+      address(pool),
+      _params.tick0,
+      _params.tick1,
+      _params.tick2,
+      tokenId0,
+      tokenId1
+    );
+
     return address(pool);
   }
 
   /// @inheritdoc ICLMMAdapter
   function claimFees(address _token) external returns (uint256 fee0, uint256 fee1) {
-    require(msg.sender == launchpad, "!launchpad");
+    if (msg.sender != launchpad) revert Unauthorized();
 
     uint256 lockId0 = tokenToLockId[IERC20(_token)][0];
     uint256 lockId1 = tokenToLockId[IERC20(_token)][1];
@@ -144,8 +175,8 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
     tokenToClaimedFees[IERC20(_token)][1] += fee1;
 
     IERC20 quoteToken = ITokenLaunchpad(launchpad).fundingToken();
-    IERC20(_token).transfer(msg.sender, fee0);
-    quoteToken.transfer(msg.sender, fee1);
+    IERC20(_token).safeTransfer(msg.sender, fee0);
+    quoteToken.safeTransfer(msg.sender, fee1);
   }
 
   function claimedFees(address _token) external view returns (uint256 fee0, uint256 fee1) {
@@ -155,10 +186,10 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
 
   /// @dev Refund tokens to the owner
   /// @param _token The token to refund
-  function _refundTokens(IERC20 _token) internal {
+  function _refundTokens(IERC20 _token, uint256 _initialBalance) internal {
     uint256 remaining = _token.balanceOf(address(this));
     if (remaining == 0) return;
-    _token.safeTransfer(msg.sender, remaining);
+    _token.safeTransfer(msg.sender, remaining - _initialBalance);
   }
 
   /// @dev Mint a position and lock it forever

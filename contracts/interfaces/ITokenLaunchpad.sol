@@ -80,6 +80,12 @@ interface ITokenLaunchpad is IERC721 {
   /// @param _fee1 The amount of fee claimed for token1
   event FeeClaimed(IERC20 indexed _token, uint256 _fee0, uint256 _fee1);
 
+  /// @notice Thrown when the deployed token address doesn't match the expected address
+  error InvalidTokenAddress();
+
+  /// @notice Thrown when caller is not the cron or owner
+  error Unauthorized();
+
   /// @notice Initializes the launchpad contract
   /// @param _owner The owner address
   /// @param _fundingToken The funding token address
