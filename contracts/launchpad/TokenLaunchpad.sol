@@ -30,6 +30,7 @@ import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 import {SomeToken} from "contracts/SomeToken.sol";
 import {ICLMMAdapter} from "contracts/interfaces/ICLMMAdapter.sol";
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
+import {SafeApproval} from "contracts/utils/SafeApproval.sol";
 
 abstract contract TokenLaunchpad is
   ITokenLaunchpad,
@@ -50,6 +51,10 @@ abstract contract TokenLaunchpad is
   int24 public launchTick;
   int24 public graduationTick;
   int24 public upperMaxTick;
+
+  // Constants for liquidity amounts (matching BaseV3Adapter)
+  uint256 public constant GRADUATION_AMOUNT = 600_000_000 * 1e18;
+  uint256 public constant POST_GRADUATION_AMOUNT = 400_000_000 * 1e18;
 
   receive() external payable {}
 
@@ -112,12 +117,21 @@ abstract contract TokenLaunchpad is
           tick2: upperMaxTick
         })
       );
+      
       emit TokenLaunched(token, address(adapter), pool, p);
     }
 
     _safeMint(msg.sender, tokenToNftId[token]);
 
-    fundingToken.forceApprove(address(adapter), type(uint256).max);
+    // Calculate total amount needed (1e18 bootstrap + user amount)
+    // Note: funding token is always 18 decimals
+    uint256 totalSwapAmount = 1e18 + amount;
+    
+    // Pull all required funds from caller first (fixes unfunded bootstrap issue)
+    fundingToken.transferFrom(msg.sender, address(this), totalSwapAmount);
+    
+    // Use safe approval pattern for funding token swaps
+    SafeApproval.safeApprove(fundingToken, address(adapter), totalSwapAmount);
 
     // buy 1 token to register the token on tools like dexscreener
     uint256 swapped = adapter.swapWithExactInput(fundingToken, token, 1 ether, 0, 0);
@@ -125,8 +139,7 @@ abstract contract TokenLaunchpad is
     // if the user wants to buy more tokens, they can do so
     uint256 received;
     if (amount > 0) {
-      fundingToken.safeTransferFrom(msg.sender, address(this), amount);
-      received = adapter.swapWithExactInput(fundingToken, token, amount, 0, 0);
+      received = adapter.swapWithExactInput(fundingToken, token, amount, 0);
     }
 
     // refund any remaining tokens
@@ -149,6 +162,7 @@ abstract contract TokenLaunchpad is
     cron = _cron;
     emit CronUpdated(_cron);
   }
+
 
   /// @inheritdoc ITokenLaunchpad
   function claimFees(IERC20 _token) external nonReentrant {
@@ -183,9 +197,48 @@ abstract contract TokenLaunchpad is
   }
 
   function _updateLaunchTicks(int24 _launchTick, int24 _graduationTick, int24 _upperMaxTick) internal {
+    _validateTicks(_launchTick, _graduationTick, _upperMaxTick);
     launchTick = _launchTick;
     graduationTick = _graduationTick;
     upperMaxTick = _upperMaxTick;
     emit LaunchTicksUpdated(_launchTick, _graduationTick, _upperMaxTick);
+  }
+
+  /// @dev Validates tick parameters for proper ordering, alignment, and bounds
+  /// @param _launchTick The launch tick
+  /// @param _graduationTick The graduation tick  
+  /// @param _upperMaxTick The upper max tick
+  function _validateTicks(int24 _launchTick, int24 _graduationTick, int24 _upperMaxTick) internal pure {
+    // Constants for validation
+    int24 TICK_SPACING = 200;
+    int24 MIN_TICK = TickMath.MIN_TICK;
+    int24 MAX_TICK = TickMath.MAX_TICK;
+    
+    // Check ordering: launchTick < graduationTick < upperMaxTick
+    if (_launchTick >= _graduationTick) {
+      revert("Invalid tick ordering: launchTick must be < graduationTick");
+    }
+    if (_graduationTick >= _upperMaxTick) {
+      revert("Invalid tick ordering: graduationTick must be < upperMaxTick");
+    }
+    
+    // Check bounds: all ticks must be within valid range
+    if (_launchTick <= MIN_TICK) {
+      revert("Invalid tick bounds: launchTick must be > MIN_TICK");
+    }
+    if (_upperMaxTick >= MAX_TICK) {
+      revert("Invalid tick bounds: upperMaxTick must be < MAX_TICK");
+    }
+    
+    // Check alignment: all ticks must be aligned to TICK_SPACING
+    if (_launchTick % TICK_SPACING != 0) {
+      revert("Invalid tick alignment: launchTick must be aligned to TICK_SPACING");
+    }
+    if (_graduationTick % TICK_SPACING != 0) {
+      revert("Invalid tick alignment: graduationTick must be aligned to TICK_SPACING");
+    }
+    if (_upperMaxTick % TICK_SPACING != 0) {
+      revert("Invalid tick alignment: upperMaxTick must be aligned to TICK_SPACING");
+    }
   }
 }

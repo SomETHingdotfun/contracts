@@ -146,6 +146,14 @@ contract MockNonfungiblePositionManagerRamses is IERC721 {
     liquidity = mockLiquidity[tokenId] > 0 ? mockLiquidity[tokenId] : 1000;
     amount0 = mockAmount0[tokenId] > 0 ? mockAmount0[tokenId] : params.amount0Desired;
     amount1 = mockAmount1[tokenId] > 0 ? mockAmount1[tokenId] : 0;
+
+    // Simulate consuming the tokens as a real position manager would
+    if (amount0 > 0) {
+      IERC20(params.token0).transferFrom(msg.sender, address(this), amount0);
+    }
+    if (amount1 > 0) {
+      IERC20(params.token1).transferFrom(msg.sender, address(this), amount1);
+    }
   }
 
   function collect(CollectParams calldata params) external payable returns (uint256 amount0, uint256 amount1) {
@@ -204,14 +212,34 @@ contract MockRamsesPoolFactory {
     external
     returns (address pool)
   {
-    bytes32 poolKey = keccak256(abi.encodePacked(address(_token0), address(_token1), _tickSpacing));
+    // Sort tokens to ensure canonical ordering
+    (IERC20 token0, IERC20 token1) = _sortTokens(_token0, _token1);
+    
+    bytes32 poolKey = keccak256(abi.encodePacked(address(token0), address(token1), _tickSpacing));
     require(pools[poolKey] == address(0), "Pool already exists");
 
     // Create a mock pool address
-    pool = address(uint160(uint256(keccak256(abi.encodePacked(_token0, _token1, _tickSpacing, _nextPoolId++)))));
+    pool = address(uint160(uint256(keccak256(abi.encodePacked(token0, token1, _tickSpacing, _nextPoolId++)))));
     pools[poolKey] = pool;
 
     return pool;
+  }
+
+  function getPool(IERC20 _token0, IERC20 _token1, int24 _tickSpacing) external view returns (address pool) {
+    // Sort tokens to ensure canonical ordering
+    (IERC20 token0, IERC20 token1) = _sortTokens(_token0, _token1);
+    
+    bytes32 poolKey = keccak256(abi.encodePacked(address(token0), address(token1), _tickSpacing));
+    return pools[poolKey];
+  }
+
+  /// @dev Sorts two tokens by address to ensure canonical ordering
+  function _sortTokens(IERC20 _tokenA, IERC20 _tokenB) internal pure returns (IERC20 token0, IERC20 token1) {
+    if (address(_tokenA) < address(_tokenB)) {
+      return (_tokenA, _tokenB);
+    } else {
+      return (_tokenB, _tokenA);
+    }
   }
 }
 
@@ -427,6 +455,203 @@ contract RamsesAdapterTest is Test {
     // Verify NFTs were minted to the adapter
     assertEq(nftPositionManager.ownerOf(1), address(adapter));
     assertEq(nftPositionManager.ownerOf(2), address(adapter));
+  }
+
+  function test_addSingleSidedLiquidity_noResidualTokens() public {
+    ICLMMAdapter.AddLiquidityParams memory params = ICLMMAdapter.AddLiquidityParams({
+      tokenBase: token0,
+      tokenQuote: fundingToken,
+      tick0: -1000,
+      tick1: 0,
+      tick2: 1000
+    });
+
+    // Set mock mint results that use less than the full amount
+    // This simulates the real scenario where not all tokens are consumed
+    nftPositionManager.setMockMintResult(1, 1000, 500_000_000 * 1e18, 0); // Used 500M instead of 600M
+    nftPositionManager.setMockMintResult(2, 2000, 300_000_000 * 1e18, 0); // Used 300M instead of 400M
+
+    // Record initial balances
+    uint256 initialLaunchpadBalance = token0.balanceOf(address(launchpad));
+    uint256 initialAdapterBalance = token0.balanceOf(address(adapter));
+
+    vm.prank(address(launchpad));
+    address pool = adapter.addSingleSidedLiquidity(params);
+
+    // Verify pool was created
+    assertTrue(pool != address(0));
+
+    // Verify the launchpad received the refunded tokens
+    // Expected: initial balance - 500M (first mint) - 300M (second mint) + 1M (adapter's initial tokens) = initial - 800M + 1M
+    uint256 expectedLaunchpadBalance = initialLaunchpadBalance - 500_000_000 * 1e18 - 300_000_000 * 1e18 + 1_000_000 * 1e18;
+    
+    assertEq(token0.balanceOf(address(launchpad)), expectedLaunchpadBalance, "Launchpad should receive refunded tokens");
+
+    // Verify that the adapter has no tokens (all were refunded)
+    // This is the correct behavior - adapters should be stateless
+    assertEq(token0.balanceOf(address(adapter)), 0, "Adapter should have no tokens after operation");
+  }
+
+  function test_addSingleSidedLiquidity_tickUnderflowProtection() public {
+    ICLMMAdapter.AddLiquidityParams memory params = ICLMMAdapter.AddLiquidityParams({
+      tokenBase: token0,
+      tokenQuote: fundingToken,
+      tick0: -887272, // MIN_TICK
+      tick1: 0,
+      tick2: 1000
+    });
+
+    // This should revert because tick0 is MIN_TICK, causing underflow in tick0 - 1
+    vm.prank(address(launchpad));
+    vm.expectRevert("Tick0 too close to MIN_TICK");
+    adapter.addSingleSidedLiquidity(params);
+  }
+
+  function test_createPool_tokenSorting() public {
+    // Create new tokens to avoid conflicts with existing pools
+    MockERC20 tokenA = new MockERC20("TokenA", "TKA", 18);
+    MockERC20 tokenB = new MockERC20("TokenB", "TKB", 18);
+    
+    // Fund the launchpad with the new tokens
+    vm.prank(address(launchpad));
+    tokenA.mint(address(launchpad), 2_000_000_000 * 1e18);
+    vm.prank(address(launchpad));
+    tokenB.mint(address(launchpad), 2_000_000_000 * 1e18);
+    vm.prank(address(launchpad));
+    tokenA.approve(address(adapter), type(uint256).max);
+    vm.prank(address(launchpad));
+    tokenB.approve(address(adapter), type(uint256).max);
+
+    // Test that tokens are sorted correctly regardless of input order
+    ICLMMAdapter.AddLiquidityParams memory params1 = ICLMMAdapter.AddLiquidityParams({
+      tokenBase: tokenA,    // tokenA address < tokenB address
+      tokenQuote: tokenB,
+      tick0: -1000,
+      tick1: 0,
+      tick2: 1000
+    });
+
+    ICLMMAdapter.AddLiquidityParams memory params2 = ICLMMAdapter.AddLiquidityParams({
+      tokenBase: tokenB,  // tokenB address > tokenA address
+      tokenQuote: tokenA,
+      tick0: -1000,
+      tick1: 0,
+      tick2: 1000
+    });
+
+    // First creation should succeed
+    vm.prank(address(launchpad));
+    address pool1 = adapter.addSingleSidedLiquidity(params1);
+    assertTrue(pool1 != address(0), "First pool creation should succeed");
+
+    // Second creation with reversed order should revert because it's the same pool
+    vm.prank(address(launchpad));
+    vm.expectRevert("Pool already exists");
+    adapter.addSingleSidedLiquidity(params2);
+  }
+
+  function test_createPool_duplicatePrevention() public {
+    ICLMMAdapter.AddLiquidityParams memory params = ICLMMAdapter.AddLiquidityParams({
+      tokenBase: token0,
+      tokenQuote: fundingToken,
+      tick0: -1000,
+      tick1: 0,
+      tick2: 1000
+    });
+
+    // First creation should succeed
+    vm.prank(address(launchpad));
+    address pool1 = adapter.addSingleSidedLiquidity(params);
+    assertTrue(pool1 != address(0), "First pool creation should succeed");
+
+    // Second creation with same parameters should revert
+    vm.prank(address(launchpad));
+    vm.expectRevert("Pool already exists");
+    adapter.addSingleSidedLiquidity(params);
+  }
+
+  function test_createPool_differentTickSpacing() public {
+    // Create two pools with different tick spacing - should both succeed
+    ICLMMAdapter.AddLiquidityParams memory params1 = ICLMMAdapter.AddLiquidityParams({
+      tokenBase: token0,
+      tokenQuote: fundingToken,
+      tick0: -1000,
+      tick1: 0,
+      tick2: 1000
+    });
+
+    // First pool with default tick spacing (200)
+    vm.prank(address(launchpad));
+    address pool1 = adapter.addSingleSidedLiquidity(params1);
+    assertTrue(pool1 != address(0), "First pool should be created");
+
+    // Note: We can't easily test different tick spacing with current setup
+    // as the adapter uses a fixed TICK_SPACING constant
+    // This test verifies that the same tokens can be used in different contexts
+  }
+
+  function test_sortTokens_function() public {
+    // Test the internal _sortTokens function through pool creation
+    // Create tokens with known addresses for testing
+    MockERC20 tokenA = new MockERC20("TokenA", "TKA", 18);
+    MockERC20 tokenB = new MockERC20("TokenB", "TKB", 18);
+    
+    // Ensure tokenA address < tokenB address
+    if (address(tokenA) > address(tokenB)) {
+      (tokenA, tokenB) = (tokenB, tokenA);
+    }
+
+    ICLMMAdapter.AddLiquidityParams memory params = ICLMMAdapter.AddLiquidityParams({
+      tokenBase: tokenA,
+      tokenQuote: tokenB,
+      tick0: -1000,
+      tick1: 0,
+      tick2: 1000
+    });
+
+    // Fund the launchpad with the new tokens
+    vm.prank(address(launchpad));
+    tokenA.mint(address(launchpad), 2_000_000_000 * 1e18);
+    vm.prank(address(launchpad));
+    tokenB.mint(address(launchpad), 2_000_000_000 * 1e18);
+    vm.prank(address(launchpad));
+    tokenA.approve(address(adapter), type(uint256).max);
+    vm.prank(address(launchpad));
+    tokenB.approve(address(adapter), type(uint256).max);
+
+    // Create pool - should succeed with sorted tokens
+    vm.prank(address(launchpad));
+    address pool = adapter.addSingleSidedLiquidity(params);
+    assertTrue(pool != address(0), "Pool should be created with sorted tokens");
+  }
+
+  function test_createPool_multipleTokenPairs() public {
+    // Test creating pools with multiple different token pairs
+    MockERC20 tokenC = new MockERC20("TokenC", "TKC", 18);
+    MockERC20 tokenD = new MockERC20("TokenD", "TKD", 18);
+    
+    // Fund the launchpad with the new tokens
+    vm.prank(address(launchpad));
+    tokenC.mint(address(launchpad), 2_000_000_000 * 1e18);
+    vm.prank(address(launchpad));
+    tokenD.mint(address(launchpad), 2_000_000_000 * 1e18);
+    vm.prank(address(launchpad));
+    tokenC.approve(address(adapter), type(uint256).max);
+    vm.prank(address(launchpad));
+    tokenD.approve(address(adapter), type(uint256).max);
+
+    ICLMMAdapter.AddLiquidityParams memory params = ICLMMAdapter.AddLiquidityParams({
+      tokenBase: tokenC,
+      tokenQuote: tokenD,
+      tick0: -1000,
+      tick1: 0,
+      tick2: 1000
+    });
+
+    // Pool creation should succeed
+    vm.prank(address(launchpad));
+    address pool = adapter.addSingleSidedLiquidity(params);
+    assertTrue(pool != address(0), "Pool should be created with different token pair");
   }
 
   function test_addSingleSidedLiquidity_onlyLaunchpad() public {

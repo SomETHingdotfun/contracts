@@ -28,6 +28,7 @@ import {ICLMMAdapter, IClPool} from "contracts/interfaces/ICLMMAdapter.sol";
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 import {ICLSwapRouter} from "contracts/interfaces/thirdparty/ICLSwapRouter.sol";
 import {IClPoolFactory} from "contracts/interfaces/thirdparty/IClPoolFactory.sol";
+import {SafeApproval} from "contracts/utils/SafeApproval.sol";
 
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
@@ -72,7 +73,10 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
   ) external virtual returns (uint256 amountIn) {
     uint256 initialBalance = _tokenIn.balanceOf(address(this));
     _tokenIn.safeTransferFrom(msg.sender, address(this), _maxAmountIn);
-    _tokenIn.forceApprove(address(swapRouter), type(uint256).max);
+
+    // Use safe approval pattern - approve exact amount needed
+    SafeApproval.safeApprove(_tokenIn, address(swapRouter), _maxAmountIn);
+
     amountIn = swapRouter.exactOutputSingle(
       ICLSwapRouter.ExactOutputSingleParams({
         tokenIn: address(_tokenIn),
@@ -99,7 +103,9 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
     uint160 _sqrtPriceLimitX96
   ) external virtual returns (uint256 amountOut) {
     _tokenIn.safeTransferFrom(msg.sender, address(this), _amountIn);
-    _tokenIn.forceApprove(address(swapRouter), type(uint256).max);
+    
+    // Use safe approval pattern - approve exact amount needed
+    SafeApproval.safeApprove(_tokenIn, address(swapRouter), _amountIn);
 
     amountOut = swapRouter.exactInputSingle(
       ICLSwapRouter.ExactInputSingleParams({
@@ -133,6 +139,8 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
     if (_params.tick0 <= TickMath.MIN_TICK) revert Tick0OutOfRange(_params.tick0, TickMath.MIN_TICK);
     if (_params.tick2 >= TickMath.MAX_TICK) revert Tick2OutOfRange(_params.tick2, TickMath.MAX_TICK);
 
+    // Ensure tick0 is not MIN_TICK to prevent underflow
+    require(_params.tick0 > TickMath.MIN_TICK, "Tick0 too close to MIN_TICK");
     uint160 sqrtPriceX96Launch = TickMath.getSqrtPriceAtTick(_params.tick0 - 1);
 
     IClPool pool = _createPool(_params.tokenBase, _params.tokenQuote, TICK_SPACING, sqrtPriceX96Launch);
@@ -144,6 +152,9 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
 
     tokenToLockId[IERC20(_params.tokenBase)][0] = tokenId0;
     tokenToLockId[IERC20(_params.tokenBase)][1] = tokenId1;
+
+    // Final cleanup: refund any remaining tokens to the launchpad
+    _refundTokens(_params.tokenBase);
 
     emit LiquidityAdded(
       address(_params.tokenBase),

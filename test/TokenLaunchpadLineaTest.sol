@@ -349,17 +349,17 @@ contract TokenLaunchpadLineaTest is Test {
 
   // Test setLaunchTicks access control
   function test_setLaunchTicks_accessControl() public {
-    // Test that only owner can set launch ticks
+    // Test that only owner can set launch ticks (aligned to TICK_SPACING = 200)
     vm.prank(whale);
     vm.expectRevert();
-    launchpad.setLaunchTicks(-100, -50, 100);
+    launchpad.setLaunchTicks(-200, 0, 200);
 
-    // Test that cron can set launch ticks
+    // Test that cron can set launch ticks (aligned to TICK_SPACING = 200)
     vm.prank(owner);
-    launchpad.setLaunchTicks(-100, -50, 100);
-    assertEq(launchpad.launchTick(), -100);
-    assertEq(launchpad.graduationTick(), -50);
-    assertEq(launchpad.upperMaxTick(), 100);
+    launchpad.setLaunchTicks(-200, 0, 200);
+    assertEq(launchpad.launchTick(), -200);
+    assertEq(launchpad.graduationTick(), 0);
+    assertEq(launchpad.upperMaxTick(), 200);
   }
 
   // Test setCron access control

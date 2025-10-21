@@ -55,6 +55,8 @@ interface IRamsesPoolFactory {
   function createPool(IERC20 _token0, IERC20 _token1, int24 _tickSpacing, uint160 _sqrtPriceX96Launch)
     external
     returns (address pool);
+    
+  function getPool(IERC20 _token0, IERC20 _token1, int24 _tickSpacing) external view returns (address pool);
 }
 
 contract RamsesAdapter is BaseV3Adapter {
@@ -111,8 +113,30 @@ contract RamsesAdapter is BaseV3Adapter {
     override
     returns (IClPool pool)
   {
-    address _pool =
-      IRamsesPoolFactory(address(clPoolFactory)).createPool(_token0, _token1, _tickSpacing, _sqrtPriceX96Launch);
+    // Sort tokens to ensure canonical ordering (token0 < token1 by address)
+    (IERC20 token0, IERC20 token1) = _sortTokens(_token0, _token1);
+    
+    // Check if pool already exists
+    address existingPool = IRamsesPoolFactory(address(clPoolFactory)).getPool(token0, token1, _tickSpacing);
+    if (existingPool != address(0)) {
+      revert("Pool already exists");
+    }
+    
+    // Create the pool with sorted tokens
+    address _pool = IRamsesPoolFactory(address(clPoolFactory)).createPool(token0, token1, _tickSpacing, _sqrtPriceX96Launch);
     pool = IClPool(_pool);
+  }
+
+  /// @dev Sorts two tokens by address to ensure canonical ordering
+  /// @param _tokenA First token
+  /// @param _tokenB Second token
+  /// @return token0 The token with the smaller address
+  /// @return token1 The token with the larger address
+  function _sortTokens(IERC20 _tokenA, IERC20 _tokenB) internal pure returns (IERC20 token0, IERC20 token1) {
+    if (address(_tokenA) < address(_tokenB)) {
+      return (_tokenA, _tokenB);
+    } else {
+      return (_tokenB, _tokenA);
+    }
   }
 }

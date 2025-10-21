@@ -210,9 +210,9 @@ contract UIHelperTest is Test {
     assertEq(address(uiHelper.adapter()), address(adapter));
     assertEq(address(uiHelper.fundingToken()), address(fundingToken));
 
-    // Check that funding token is approved for adapter and launchpad
-    assertEq(fundingToken.allowance(address(uiHelper), address(adapter)), type(uint256).max);
-    assertEq(fundingToken.allowance(address(uiHelper), address(launchpad)), type(uint256).max);
+    // Check that funding token is NOT approved for adapter and launchpad (safe-approve pattern)
+    assertEq(fundingToken.allowance(address(uiHelper), address(adapter)), 0);
+    assertEq(fundingToken.allowance(address(uiHelper), address(launchpad)), 0);
   }
 
   // ============ createAndBuy Tests ============
