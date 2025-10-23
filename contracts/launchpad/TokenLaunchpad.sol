@@ -27,6 +27,8 @@ import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/ut
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
+
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {SomeToken} from "contracts/SomeToken.sol";
 import {ICLMMAdapter} from "contracts/interfaces/ICLMMAdapter.sol";
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
@@ -72,12 +74,13 @@ abstract contract TokenLaunchpad is
     __ReentrancyGuard_init();
   }
 
-  function computeTokenAddress(CreateParams memory p, address _fundingToken, address _caller) external view returns (address, bool) {
+  function computeTokenAddress(CreateParams memory p, address _fundingToken, address _caller)
+    external
+    view
+    returns (address, bool)
+  {
     bytes32 salt = keccak256(abi.encode(p.salt, _caller, p.name, p.symbol));
-    bytes memory bytecode = abi.encodePacked(
-      type(SomeToken).creationCode,
-      abi.encode(p.name, p.symbol)
-    );
+    bytes memory bytecode = abi.encodePacked(type(SomeToken).creationCode, abi.encode(p.name, p.symbol));
     bytes32 bytecodeHash = keccak256(bytecode);
     address computedAddress = Create2.computeAddress(salt, bytecodeHash, address(this));
     return (computedAddress, computedAddress < _fundingToken);
@@ -95,13 +98,10 @@ abstract contract TokenLaunchpad is
     {
       //Deploy using CREATE2
       bytes32 salt = keccak256(abi.encode(p.salt, msg.sender, p.name, p.symbol));
-      bytes memory bytecode = abi.encodePacked(
-        type(SomeToken).creationCode,
-        abi.encode(p.name, p.symbol)
-      );
+      bytes memory bytecode = abi.encodePacked(type(SomeToken).creationCode, abi.encode(p.name, p.symbol));
       address tokenAddress = Create2.deploy(0, salt, bytecode);
       token = SomeToken(tokenAddress);
-      
+
       if (expected != address(0) && address(token) != expected) revert InvalidTokenAddress();
 
       tokenToNftId[token] = tokens.length;
@@ -117,7 +117,7 @@ abstract contract TokenLaunchpad is
           tick2: upperMaxTick
         })
       );
-      
+
       emit TokenLaunched(token, address(adapter), pool, p);
     }
 
@@ -126,10 +126,7 @@ abstract contract TokenLaunchpad is
     // Calculate total amount needed (1e18 bootstrap + user amount)
     // Note: funding token is always 18 decimals
     uint256 totalSwapAmount = 1e18 + amount;
-    
-    // Pull all required funds from caller first (fixes unfunded bootstrap issue)
-    fundingToken.transferFrom(msg.sender, address(this), totalSwapAmount);
-    
+
     // Use safe approval pattern for funding token swaps
     SafeApproval.safeApprove(fundingToken, address(adapter), totalSwapAmount);
 
@@ -139,7 +136,9 @@ abstract contract TokenLaunchpad is
     // if the user wants to buy more tokens, they can do so
     uint256 received;
     if (amount > 0) {
-      received = adapter.swapWithExactInput(fundingToken, token, amount, 0);
+      // Pull all required funds from caller first (fixes unfunded bootstrap issue)
+      fundingToken.transferFrom(msg.sender, address(this), amount);
+      received = adapter.swapWithExactInput(fundingToken, token, amount, 0, 0);
     }
 
     // refund any remaining tokens
@@ -162,7 +161,6 @@ abstract contract TokenLaunchpad is
     cron = _cron;
     emit CronUpdated(_cron);
   }
-
 
   /// @inheritdoc ITokenLaunchpad
   function claimFees(IERC20 _token) external nonReentrant {
@@ -206,14 +204,14 @@ abstract contract TokenLaunchpad is
 
   /// @dev Validates tick parameters for proper ordering, alignment, and bounds
   /// @param _launchTick The launch tick
-  /// @param _graduationTick The graduation tick  
+  /// @param _graduationTick The graduation tick
   /// @param _upperMaxTick The upper max tick
   function _validateTicks(int24 _launchTick, int24 _graduationTick, int24 _upperMaxTick) internal pure {
     // Constants for validation
     int24 TICK_SPACING = 200;
     int24 MIN_TICK = TickMath.MIN_TICK;
     int24 MAX_TICK = TickMath.MAX_TICK;
-    
+
     // Check ordering: launchTick < graduationTick < upperMaxTick
     if (_launchTick >= _graduationTick) {
       revert("Invalid tick ordering: launchTick must be < graduationTick");
@@ -221,7 +219,7 @@ abstract contract TokenLaunchpad is
     if (_graduationTick >= _upperMaxTick) {
       revert("Invalid tick ordering: graduationTick must be < upperMaxTick");
     }
-    
+
     // Check bounds: all ticks must be within valid range
     if (_launchTick <= MIN_TICK) {
       revert("Invalid tick bounds: launchTick must be > MIN_TICK");
@@ -229,7 +227,7 @@ abstract contract TokenLaunchpad is
     if (_upperMaxTick >= MAX_TICK) {
       revert("Invalid tick bounds: upperMaxTick must be < MAX_TICK");
     }
-    
+
     // Check alignment: all ticks must be aligned to TICK_SPACING
     if (_launchTick % TICK_SPACING != 0) {
       revert("Invalid tick alignment: launchTick must be aligned to TICK_SPACING");

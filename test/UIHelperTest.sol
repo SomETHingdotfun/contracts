@@ -4,16 +4,13 @@ pragma solidity ^0.8.0;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 import {UIHelper} from "contracts/launchpad/clmm/UIHelper.sol";
-import {SomeProxy} from "contracts/SomeProxy.sol";
 
 import {Test} from "lib/forge-std/src/Test.sol";
 import {TestableTokenLaunchpad} from "test/TokenLaunchpadTest.sol";
 import {MockCLMMAdapter} from "test/TokenLaunchpadTest.sol";
 import {MockERC20} from "test/mocks/MockERC20.sol";
-import {IUIHelper} from "contracts/interfaces/IUIHelper.sol";
-import {IOpenOceanCaller, IOpenOceanExchange} from "contracts/interfaces/thirdparty/IOpenOcean.sol";
 
-// import "forge-std/console.sol";
+import "forge-std/console.sol";
 
 /// @title MockWETH9
 /// @notice Mock implementation of WETH9 for testing
@@ -72,9 +69,9 @@ contract MockWETH9 {
   }
 }
 
-/// @title MockOpenOcean
-/// @notice Mock implementation of OpenOcean router for testing
-contract MockOpenOcean is IOpenOceanExchange {
+/// @title MockODOS
+/// @notice Mock implementation of ODOS router for testing
+contract MockODOS {
   mapping(address => uint256) public mockOutputAmounts;
   bool public shouldRevert = false;
   bool public shouldRevertOnCall = false;
@@ -91,26 +88,15 @@ contract MockOpenOcean is IOpenOceanExchange {
     shouldRevertOnCall = _shouldRevert;
   }
 
-  function swap(
-    IOpenOceanCaller caller,
-    SwapDescription memory desc,
-    IOpenOceanCaller.CallDescription[] calldata calls
-  ) external payable override returns (uint256) {
-    if (shouldRevertOnCall) {
-      revert("Mock OpenOcean call revert");
-    }
-    return mockOutputAmounts[address(desc.dstToken)];
-  }
-
   receive() external payable {
     if (shouldRevert) {
-      revert("Mock OpenOcean revert");
+      revert("Mock ODOS revert");
     }
   }
 
   fallback() external payable {
     if (shouldRevertOnCall) {
-      revert("Mock OpenOcean call revert");
+      revert("Mock ODOS call revert");
     }
   }
 }
@@ -121,42 +107,27 @@ contract UIHelperTest is Test {
   MockCLMMAdapter adapter;
   MockERC20 fundingToken;
   MockWETH9 weth;
-  MockOpenOcean openOcean;
+  MockODOS odos;
 
   address owner;
   address user1;
-  address proxyAdmin;
 
   function setUp() public {
     owner = makeAddr("owner");
     user1 = makeAddr("user1");
-    proxyAdmin = makeAddr("proxyAdmin");
 
     // Deploy mock contracts
     fundingToken = new MockERC20("Funding Token", "FUND", 18);
     adapter = new MockCLMMAdapter();
+    launchpad = new TestableTokenLaunchpad();
     weth = new MockWETH9();
-    openOcean = new MockOpenOcean();
-    
-    // Deploy implementation contract
-    TestableTokenLaunchpad launchpadImpl = new TestableTokenLaunchpad();
-    
-    // Deploy proxy with initialization
-    bytes memory initData = abi.encodeWithSignature(
-      "initialize(address,address,address)",
-      owner,
-      address(fundingToken),
-      address(adapter)
-    );
-    SomeProxy launchpadProxy = new SomeProxy(
-      address(launchpadImpl),
-      proxyAdmin,
-      initData
-    );
-    launchpad = TestableTokenLaunchpad(payable(address(launchpadProxy)));
+    odos = new MockODOS();
+
+    // Initialize the launchpad
+    launchpad.initialize(owner, address(fundingToken), address(adapter));
 
     // Deploy UIHelper
-    uiHelper = new UIHelper(address(weth), address(openOcean), address(launchpad));
+    uiHelper = new UIHelper(address(weth), address(odos), address(launchpad));
 
     // Fund users
     fundingToken.mint(user1, 1000 * 1e18);
@@ -185,34 +156,32 @@ contract UIHelperTest is Test {
       metadata: string(abi.encodePacked("ipfs://", salt))
     });
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
-      tokenOut: fundingToken,
-      minReturnAmount: 0,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](0)
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
     });
 
     vm.prank(user1);
-    (token,,, tokenId) = uiHelper.createAndBuy(openOceanParams, params, address(0), 0);
+    (token,,, tokenId) = uiHelper.createAndBuy(odosParams, params, address(0), 0);
   }
 
   // ============ Constructor Tests ============
 
   function test_constructor() public {
     assertEq(address(uiHelper.weth()), address(weth));
-    assertEq(address(uiHelper.openOcean()), address(openOcean));
+    assertEq(uiHelper.ODOS(), address(odos));
     assertEq(address(uiHelper.launchpad()), address(launchpad));
     assertEq(address(uiHelper.adapter()), address(adapter));
     assertEq(address(uiHelper.fundingToken()), address(fundingToken));
 
-    // Check that funding token is NOT approved for adapter and launchpad (safe-approve pattern)
-    assertEq(fundingToken.allowance(address(uiHelper), address(adapter)), 0);
-    assertEq(fundingToken.allowance(address(uiHelper), address(launchpad)), 0);
+    // Check that funding token is approved for adapter and launchpad
+    assertEq(fundingToken.allowance(address(uiHelper), address(adapter)), type(uint256).max);
+    assertEq(fundingToken.allowance(address(uiHelper), address(launchpad)), type(uint256).max);
   }
 
   // ============ createAndBuy Tests ============
@@ -225,21 +194,19 @@ contract UIHelperTest is Test {
       metadata: "ipfs://test"
     });
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: IERC20(address(0)), // ETH
       tokenAmountIn: 0,
-      tokenOut: fundingToken,
-      minReturnAmount: 0,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](0)
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
     });
 
     vm.prank(user1);
     (address token, uint256 received, uint256 swapped, uint256 tokenId) =
-      uiHelper.createAndBuy(openOceanParams, params, address(0), 0);
+      uiHelper.createAndBuy(odosParams, params, address(0), 0);
 
     // Verify token was created
     assertTrue(token != address(0));
@@ -256,22 +223,20 @@ contract UIHelperTest is Test {
       metadata: "ipfs://test2"
     });
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: fundingToken,
       tokenAmountIn: 100 * 1e18,
-      tokenOut: fundingToken,
-      minReturnAmount: 0,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](0)
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
     });
 
     vm.startPrank(user1);
     fundingToken.approve(address(uiHelper), 100 * 1e18);
     (address token, uint256 received, uint256 swapped, uint256 tokenId) =
-      uiHelper.createAndBuy(openOceanParams, params, address(0), 0);
+      uiHelper.createAndBuy(odosParams, params, address(0), 0);
     vm.stopPrank();
 
     assertTrue(token != address(0));
@@ -280,7 +245,7 @@ contract UIHelperTest is Test {
     assertEq(swapped, adapter.mockSwapAmountOut());
   }
 
-  function test_createAndBuy_withOpenOceanSwap() public {
+  function test_createAndBuy_withOdosSwap() public {
     ITokenLaunchpad.CreateParams memory params = ITokenLaunchpad.CreateParams({
       salt: keccak256("test-salt-3"),
       name: "Test Token 3",
@@ -288,150 +253,136 @@ contract UIHelperTest is Test {
       metadata: "ipfs://test3"
     });
 
-    // Set up mock OpenOcean output
-    openOcean.setMockOutput(address(fundingToken), 100 * 1e18);
+    // Set up mock ODOS output
+    odos.setMockOutput(address(fundingToken), 100 * 1e18);
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
-      tokenOut: fundingToken,
-      minReturnAmount: 0,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](1)
+      odosTokenIn: IERC20(address(0)),
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: "mock-odos-data"
     });
 
     vm.prank(user1);
-    (address token,,, uint256 tokenId) = uiHelper.createAndBuy(openOceanParams, params, address(0), 0);
+    (address token,,, uint256 tokenId) = uiHelper.createAndBuy(odosParams, params, address(0), 0);
 
     assertTrue(token != address(0));
     assertEq(launchpad.ownerOf(tokenId), user1);
   }
 
-  // ============ buyWithExactInputWithOpenOcean Tests ============
+  // ============ buyWithExactInputWithOdos Tests ============
 
-  function test_buyWithExactInputWithOpenOcean_withToken() public {
+  function test_buyWithExactInputWithOdos_withToken() public {
     (address token,) = _createTokenInLaunchpad("test-buy-token", "Buy Token Token", "BUYTOKEN");
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: fundingToken,
       tokenAmountIn: 100 * 1e18,
-      tokenOut: fundingToken,
-      minReturnAmount: 0,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](0)
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
     });
 
     vm.startPrank(user1);
     fundingToken.approve(address(uiHelper), 100 * 1e18);
-    uint256 amountOut = uiHelper.buyWithExactInputWithOpenOcean(openOceanParams, IERC20(token), 0, 0);
+    uint256 amountOut = uiHelper.buyWithExactInputWithOdos(odosParams, IERC20(token), 0);
     vm.stopPrank();
 
     assertEq(amountOut, adapter.mockSwapAmountOut());
   }
 
-  function test_buyWithExactInputWithOpenOcean_withOpenOceanData() public {
-    (address token,) = _createTokenInLaunchpad("test-buy-openocean", "Buy OpenOcean Token", "BUYOPENOCEAN");
+  function test_buyWithExactInputWithOdos_withOdosData() public {
+    (address token,) = _createTokenInLaunchpad("test-buy-odos", "Buy ODOS Token", "BUYODOS");
 
-    // Set up mock OpenOcean output
-    openOcean.setMockOutput(address(fundingToken), 100 * 1e18);
+    // Set up mock ODOS output
+    odos.setMockOutput(address(fundingToken), 100 * 1e18);
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
-      tokenOut: fundingToken,
-      minReturnAmount: 0,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](1)
+      odosTokenIn: IERC20(address(0)),
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: "mock-odos-data"
     });
 
     vm.prank(user1);
-    uint256 amountOut = uiHelper.buyWithExactInputWithOpenOcean{value: 0}(openOceanParams, IERC20(token), 0, 0);
+    uint256 amountOut = uiHelper.buyWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), 0);
   }
 
-  function test_buyWithExactInputWithOpenOcean_withInvalidMinAmountOut() public {
+  function test_buyWithExactInputWithOdos_withInvalidMinAmountOut() public {
     (address token,) = _createTokenInLaunchpad("test-buy-invalid", "Buy Invalid Token", "BUYINV");
 
-    // Set up mock OpenOcean output with insufficient amount
-    openOcean.setMockOutput(address(fundingToken), 30 * 1e18);
+    // Set up mock ODOS output with insufficient amount
+    odos.setMockOutput(address(fundingToken), 30 * 1e18);
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
-      tokenOut: fundingToken,
-      minReturnAmount: 50 * 1e18,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](1)
+      odosTokenIn: IERC20(address(0)),
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 50 * 1e18,
+      odosTokenOut: fundingToken,
+      odosData: "mock-odos-data"
     });
 
     vm.prank(user1);
-    vm.expectRevert(
-      abi.encodeWithSelector(IUIHelper.InsufficientOutputAmount.selector, 30 * 1e18, 50 * 1e18)
-    );
-    uiHelper.buyWithExactInputWithOpenOcean{value: 0}(openOceanParams, IERC20(token), 0, 0);
+    vm.expectRevert("!minAmountIn");
+    uiHelper.buyWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), 0);
   }
 
-  // ============ sellWithExactInputWithOpenOcean Tests ============
+  // ============ sellWithExactInputWithOdos Tests ============
 
-  function test_sellWithExactInputWithOpenOcean_basic() public {
+  function test_sellWithExactInputWithOdos_basic() public {
     (address token,) = _createTokenInLaunchpad("test-sell-basic", "Sell Basic Token", "SELLBASIC");
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
-      tokenOut: fundingToken,
-      minReturnAmount: 0,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](0)
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
     });
 
     uint256 amountToSell = 100 * 1e18;
 
     vm.startPrank(user1);
     IERC20(token).approve(address(uiHelper), amountToSell);
-    uint256 amountSwapOut = uiHelper.sellWithExactInputWithOpenOcean{value: 0}(openOceanParams, IERC20(token), amountToSell, 0);
+    uint256 amountSwapOut = uiHelper.sellWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), amountToSell);
     vm.stopPrank();
 
     assertEq(amountSwapOut, adapter.mockSwapAmountOut());
   }
 
-  function test_sellWithExactInputWithOpenOcean_withOpenOceanData() public {
-    (address token,) = _createTokenInLaunchpad("test-sell-openocean", "Sell OpenOcean Token", "SELLOPENOCEAN");
+  function test_sellWithExactInputWithOdos_withOdosData() public {
+    (address token,) = _createTokenInLaunchpad("test-sell-odos", "Sell ODOS Token", "SELLODOS");
 
-    // Set up mock OpenOcean output
-    openOcean.setMockOutput(address(fundingToken), 100 * 1e18);
+    // Set up mock ODOS output
+    odos.setMockOutput(address(fundingToken), 100 * 1e18);
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
-      tokenIn: fundingToken,
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
-      tokenOut: fundingToken,
-      minReturnAmount: 0,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](1)
+      odosTokenIn: IERC20(address(0)),
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: "mock-odos-data"
     });
 
     uint256 amountToSell = 100 * 1e18;
 
     vm.startPrank(user1);
     IERC20(token).approve(address(uiHelper), amountToSell);
-    uint256 amountSwapOut = uiHelper.sellWithExactInputWithOpenOcean{value: 0}(openOceanParams, IERC20(token), amountToSell, 0);
+    uint256 amountSwapOut = uiHelper.sellWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), amountToSell);
     vm.stopPrank();
 
     assertEq(amountSwapOut, adapter.mockSwapAmountOut());
@@ -450,53 +401,102 @@ contract UIHelperTest is Test {
       metadata: "ipfs://purge"
     });
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
-      tokenOut: fundingToken,
-      minReturnAmount: 0,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](0)
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
     });
 
     uint256 initialBalance = user1.balance;
 
     vm.prank(user1);
-    uiHelper.createAndBuy(openOceanParams, params, address(0), 0);
+    uiHelper.createAndBuy(odosParams, params, address(0), 0);
 
     // Check that ETH was purged (sent back to user)
     assertEq(user1.balance, initialBalance + 1 ether);
     assertEq(address(uiHelper).balance, 0);
   }
 
+  function test_purge_token() public {
+    // Create a test token and send some to UIHelper
+    MockERC20 testToken = new MockERC20("Test Token", "TEST", 18);
+    testToken.mint(address(uiHelper), 100 * 1e18);
 
+    ITokenLaunchpad.CreateParams memory params = ITokenLaunchpad.CreateParams({
+      salt: keccak256("test-salt-purge-token"),
+      name: "Purge Token Test",
+      symbol: "PURGE2",
+      metadata: "ipfs://purge2"
+    });
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
+    });
+
+    uint256 initialBalance = testToken.balanceOf(user1);
+
+    vm.prank(user1);
+    uiHelper.createAndBuy(odosParams, params, address(0), 0);
+  }
+
+  function test_purge_fundingToken() public {
+    // Send funding token to UIHelper
+    fundingToken.mint(address(uiHelper), 200 * 1e18);
+
+    ITokenLaunchpad.CreateParams memory params = ITokenLaunchpad.CreateParams({
+      salt: keccak256("test-salt-purge-funding"),
+      name: "Purge Funding Token",
+      symbol: "PURGE3",
+      metadata: "ipfs://purge3"
+    });
+
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
+      tokenIn: IERC20(address(0)),
+      tokenAmountIn: 0,
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
+    });
+
+    uint256 initialBalance = fundingToken.balanceOf(user1);
+
+    vm.prank(user1);
+    uiHelper.createAndBuy(odosParams, params, address(0), 0);
+  }
 
   // ============ Error Cases Tests ============
 
-  function test_openOcean_call_failure() public {
-    // Set OpenOcean to revert on calls
-    openOcean.setShouldRevertOnCall(true);
+  function test_odos_call_failure() public {
+    // Set ODOS to revert on calls
+    odos.setShouldRevertOnCall(true);
 
-    (address token,) = _createTokenInLaunchpad("test-openocean-fail", "OpenOcean Fail Token", "OPENOCEANFAIL");
+    (address token,) = _createTokenInLaunchpad("test-odos-fail", "ODOS Fail Token", "ODOSFAIL");
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
-      tokenOut: fundingToken,
-      minReturnAmount: 0,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](1)
+      odosTokenIn: IERC20(address(0)),
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: "mock-odos-data"
     });
 
     vm.prank(user1);
-    vm.expectRevert(IUIHelper.OpenOceanCallFailed.selector);
-    uiHelper.buyWithExactInputWithOpenOcean{value: 0}(openOceanParams, IERC20(token), 0, 0);
+    vm.expectRevert("Odos call failed");
+    uiHelper.buyWithExactInputWithOdos{value: 0}(odosParams, IERC20(token), 0);
   }
 
   // ============ Receive Ether Test ============
@@ -510,28 +510,26 @@ contract UIHelperTest is Test {
 
   // ============ Fuzz Tests ============
 
-  function test_fuzz_buyWithExactInputWithOpenOcean(uint256 tokenAmount) public {
+  function test_fuzz_buyWithExactInputWithOdos(uint256 tokenAmount) public {
     // Bound the amount to reasonable values
     tokenAmount = bound(tokenAmount, 1 * 1e18, 1000 * 1e18);
 
     // First create a token in the launchpad so claimFees works
     (address token,) = _createTokenInLaunchpad("fuzz-buy", "Fuzz Buy Token", "FUZZBUY");
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: fundingToken,
       tokenAmountIn: tokenAmount,
-      tokenOut: fundingToken,
-      minReturnAmount: 0,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](0)
+      odosTokenIn: fundingToken,
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: fundingToken,
+      odosData: ""
     });
 
     vm.startPrank(user1);
     fundingToken.approve(address(uiHelper), tokenAmount);
-    uint256 amountOut = uiHelper.buyWithExactInputWithOpenOcean(openOceanParams, IERC20(token), 0, 0);
+    uint256 amountOut = uiHelper.buyWithExactInputWithOdos(odosParams, IERC20(token), 0);
     vm.stopPrank();
 
     // Verify amount out
@@ -550,20 +548,18 @@ contract UIHelperTest is Test {
         metadata: string(abi.encodePacked("ipfs://multi", i))
       });
 
-      IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+      UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
         tokenIn: IERC20(address(0)),
         tokenAmountIn: 0,
-        tokenOut: fundingToken,
-        minReturnAmount: 0,
-        guaranteedAmount: 0,
-        flags: 0,
-        referrer: address(0),
-        permit: "",
-        calls: new IOpenOceanCaller.CallDescription[](0)
+        odosTokenIn: fundingToken,
+        odosTokenAmountIn: 0,
+        minOdosTokenAmountOut: 0,
+        odosTokenOut: fundingToken,
+        odosData: ""
       });
 
       vm.prank(user1);
-      (address token,,, uint256 tokenId) = uiHelper.createAndBuy(openOceanParams, params, address(0), 0);
+      (address token,,, uint256 tokenId) = uiHelper.createAndBuy(odosParams, params, address(0), 0);
 
       assertTrue(token != address(0));
       assertEq(launchpad.ownerOf(tokenId), user1);
@@ -572,27 +568,25 @@ contract UIHelperTest is Test {
     assertEq(launchpad.getTotalTokens(), 3);
   }
 
-  function test_multiple_buyWithExactInputWithOpenOcean() public {
+  function test_multiple_buyWithExactInputWithOdos() public {
     // Create a token first
     (address token,) = _createTokenInLaunchpad("multi-buy", "Multi Buy Token", "MULTIBUY");
 
     // Perform multiple buy operations
     for (uint256 i = 0; i < 3; i++) {
-      IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+      UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
         tokenIn: fundingToken,
         tokenAmountIn: 100 * 1e18,
-        tokenOut: fundingToken,
-        minReturnAmount: 0,
-        guaranteedAmount: 0,
-        flags: 0,
-        referrer: address(0),
-        permit: "",
-        calls: new IOpenOceanCaller.CallDescription[](0)
+        odosTokenIn: fundingToken,
+        odosTokenAmountIn: 0,
+        minOdosTokenAmountOut: 0,
+        odosTokenOut: fundingToken,
+        odosData: ""
       });
 
       vm.startPrank(user1);
       fundingToken.approve(address(uiHelper), 100 * 1e18);
-      uint256 amountOut = uiHelper.buyWithExactInputWithOpenOcean(openOceanParams, IERC20(token), 0, 0);
+      uint256 amountOut = uiHelper.buyWithExactInputWithOdos(odosParams, IERC20(token), 0);
       vm.stopPrank();
 
       assertEq(amountOut, adapter.mockSwapAmountOut());
@@ -609,20 +603,18 @@ contract UIHelperTest is Test {
       metadata: "ipfs://zero"
     });
 
-    IUIHelper.OpenOceanParams memory openOceanParams = IUIHelper.OpenOceanParams({
+    UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
       tokenIn: IERC20(address(0)),
       tokenAmountIn: 0,
-      tokenOut: IERC20(address(0)),
-      minReturnAmount: 0,
-      guaranteedAmount: 0,
-      flags: 0,
-      referrer: address(0),
-      permit: "",
-      calls: new IOpenOceanCaller.CallDescription[](0)
+      odosTokenIn: IERC20(address(0)),
+      odosTokenAmountIn: 0,
+      minOdosTokenAmountOut: 0,
+      odosTokenOut: IERC20(address(0)),
+      odosData: ""
     });
 
     vm.prank(user1);
-    (address token,,, uint256 tokenId) = uiHelper.createAndBuy(openOceanParams, params, address(0), 0);
+    (address token,,, uint256 tokenId) = uiHelper.createAndBuy(odosParams, params, address(0), 0);
 
     assertTrue(token != address(0));
     assertEq(launchpad.ownerOf(tokenId), user1);

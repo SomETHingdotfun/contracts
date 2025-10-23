@@ -90,7 +90,7 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
       })
     );
     _refundTokens(_tokenIn, initialBalance);
-    
+
     emit SwapExecutedExactOutput(address(_tokenIn), address(_tokenOut), amountIn, _amountOut, msg.sender);
   }
 
@@ -103,7 +103,7 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
     uint160 _sqrtPriceLimitX96
   ) external virtual returns (uint256 amountOut) {
     _tokenIn.safeTransferFrom(msg.sender, address(this), _amountIn);
-    
+
     // Use safe approval pattern - approve exact amount needed
     SafeApproval.safeApprove(_tokenIn, address(swapRouter), _amountIn);
 
@@ -119,12 +119,13 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
         sqrtPriceLimitX96: _sqrtPriceLimitX96
       })
     );
-    
+
     emit SwapExecutedExactInput(address(_tokenIn), address(_tokenOut), _amountIn, amountOut, msg.sender);
   }
 
   /// @inheritdoc ICLMMAdapter
   function addSingleSidedLiquidity(AddLiquidityParams memory _params) external returns (address) {
+    uint256 initialBalance = _params.tokenBase.balanceOf(address(this));
     if (msg.sender != launchpad) revert Unauthorized();
 
     // Validate tick ordering
@@ -154,16 +155,10 @@ abstract contract BaseV3Adapter is ICLMMAdapter, Initializable {
     tokenToLockId[IERC20(_params.tokenBase)][1] = tokenId1;
 
     // Final cleanup: refund any remaining tokens to the launchpad
-    _refundTokens(_params.tokenBase);
+    _refundTokens(_params.tokenBase, initialBalance);
 
     emit LiquidityAdded(
-      address(_params.tokenBase),
-      address(pool),
-      _params.tick0,
-      _params.tick1,
-      _params.tick2,
-      tokenId0,
-      tokenId1
+      address(_params.tokenBase), address(pool), _params.tick0, _params.tick1, _params.tick2, tokenId0, tokenId1
     );
 
     return address(pool);
