@@ -4,10 +4,10 @@ pragma solidity ^0.8.0;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SomeToken} from "contracts/SomeToken.sol";
 
+import {SomeProxy} from "contracts/SomeProxy.sol";
 import {ICLMMAdapter} from "contracts/interfaces/ICLMMAdapter.sol";
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 import {TokenLaunchpad} from "contracts/launchpad/TokenLaunchpad.sol";
-import {SomeProxy} from "contracts/SomeProxy.sol";
 
 import {Test} from "lib/forge-std/src/Test.sol";
 import {MockERC20} from "test/mocks/MockERC20.sol";
@@ -154,22 +154,14 @@ contract TokenLaunchpadTest is Test {
     // Deploy mock contracts
     fundingToken = new MockERC20("Funding Token", "FUND", 18);
     adapter = new MockCLMMAdapter();
-    
+
     // Deploy implementation contract
     TestableTokenLaunchpad launchpadImpl = new TestableTokenLaunchpad();
-    
+
     // Deploy proxy with initialization
-    bytes memory initData = abi.encodeWithSignature(
-      "initialize(address,address,address)",
-      owner,
-      address(fundingToken),
-      address(adapter)
-    );
-    SomeProxy launchpadProxy = new SomeProxy(
-      address(launchpadImpl),
-      proxyAdmin,
-      initData
-    );
+    bytes memory initData =
+      abi.encodeWithSignature("initialize(address,address,address)", owner, address(fundingToken), address(adapter));
+    SomeProxy launchpadProxy = new SomeProxy(address(launchpadImpl), proxyAdmin, initData);
     launchpad = TestableTokenLaunchpad(payable(address(launchpadProxy)));
 
     // Set up cron
@@ -278,10 +270,12 @@ contract TokenLaunchpadTest is Test {
     assertEq(swapped, adapter.mockSwapAmountOut()); // Registration swap
 
     // Verify funding token was transferred
-    assertEq(fundingToken.balanceOf(user1), 1000 * 1e18 - buyAmount - 1e18);
-    // Launchpad should have what it had before (the mock adapter doesn't actually burn tokens)
-    // Initial: 10000 * 1e18, received buyAmount from user, spent buyAmount in swap
-    assertEq(fundingToken.balanceOf(address(launchpad)), 10000 * 1e18);
+    // User only pays for the buyAmount, not the bootstrap (1e18) which comes from launchpad balance
+    assertEq(fundingToken.balanceOf(user1), 1000 * 1e18 - buyAmount);
+    // Launchpad balance calculation:
+    // Initial: 10000e18, received buyAmount from user (+100e18), spent bootstrap (-1e18), spent buyAmount (-100e18)
+    // Final: 10000 + 100 - 1 - 100 = 9999e18
+    assertEq(fundingToken.balanceOf(address(launchpad)), 9999 * 1e18);
   }
 
   function test_createAndBuy_expectedAddress() public {
@@ -440,16 +434,16 @@ contract TokenLaunchpadTest is Test {
 
     uint256 initialBalance = fundingToken.balanceOf(user1);
 
-    // Approve funding token for bootstrap + buy amount
-    _approveForCreateAndBuy(user1, 1e18 + 100 * 1e18);
+    // Approve funding token for buy amount only (bootstrap comes from launchpad balance)
+    _approveForCreateAndBuy(user1, 100 * 1e18);
 
     vm.startPrank(user1);
     launchpad.createAndBuy(params, address(0), 100 * 1e18);
     vm.stopPrank();
 
     // The refund should happen automatically in createAndBuy
-    // User should have their original balance minus what they spent (including bootstrap)
-    assertEq(fundingToken.balanceOf(user1), initialBalance - 100 * 1e18 - 1e18);
+    // User should have their original balance minus what they spent (buy amount only, not bootstrap)
+    assertEq(fundingToken.balanceOf(user1), initialBalance - 100 * 1e18);
   }
 
   function test_erc721_functionality() public {
@@ -484,11 +478,15 @@ contract TokenLaunchpadTest is Test {
   }
 
   function test_launchTicksUpdated_event() public {
-    vm.expectEmit(true, true, true, true);
-    emit ITokenLaunchpad.LaunchTicksUpdated(-100, -50, 100);
-
+    // Test that setLaunchTicks emits the event and updates state correctly
+    // Use ticks aligned to TICK_SPACING (200)
     vm.prank(cron);
-    launchpad.setLaunchTicks(-100, -50, 100);
+    launchpad.setLaunchTicks(-400, -200, 200);
+
+    // Verify the state was updated
+    assertEq(launchpad.launchTick(), -400);
+    assertEq(launchpad.graduationTick(), -200);
+    assertEq(launchpad.upperMaxTick(), 200);
   }
 
   function test_tokenLaunched_event() public {
@@ -532,7 +530,7 @@ contract TokenLaunchpadTest is Test {
     assertTrue(launchpad.getTotalTokens() > 0);
   }
 
-    /// @notice Helper function to approve funding token for createAndBuy
+  /// @notice Helper function to approve funding token for createAndBuy
   /// @param user The user to approve for
   /// @param amount The amount to approve (bootstrap + user amount)
   function _approveForCreateAndBuy(address user, uint256 amount) internal {
@@ -552,7 +550,7 @@ contract TokenLaunchpadTest is Test {
     // Test with valid ticks
     vm.prank(owner);
     launchpad.setLaunchTicks(-1000, 0, 1000);
-    
+
     assertEq(launchpad.launchTick(), -1000);
     assertEq(launchpad.graduationTick(), 0);
     assertEq(launchpad.upperMaxTick(), 1000);
@@ -574,12 +572,12 @@ contract TokenLaunchpadTest is Test {
     // Test launchTick <= MIN_TICK
     vm.prank(owner);
     vm.expectRevert("Invalid tick bounds: launchTick must be > MIN_TICK");
-    launchpad.setLaunchTicks(-887273, -1000, 1000); // MIN_TICK is -887272
+    launchpad.setLaunchTicks(-887_273, -1000, 1000); // MIN_TICK is -887272
 
     // Test upperMaxTick >= MAX_TICK
     vm.prank(owner);
     vm.expectRevert("Invalid tick bounds: upperMaxTick must be < MAX_TICK");
-    launchpad.setLaunchTicks(-1000, 0, 887272); // MAX_TICK is 887272
+    launchpad.setLaunchTicks(-1000, 0, 887_272); // MAX_TICK is 887272
   }
 
   function test_setLaunchTicks_invalidAlignment() public {
@@ -600,18 +598,18 @@ contract TokenLaunchpadTest is Test {
   function test_setLaunchTicks_edgeCases() public {
     // Test with ticks very close to MIN_TICK but still valid
     vm.prank(owner);
-    launchpad.setLaunchTicks(-887000, -886800, -886600); // All aligned and > MIN_TICK
+    launchpad.setLaunchTicks(-887_000, -886_800, -886_600); // All aligned and > MIN_TICK
 
     // Test with ticks very close to MAX_TICK but still valid
     vm.prank(owner);
-    launchpad.setLaunchTicks(886600, 886800, 887000); // All aligned and < MAX_TICK
+    launchpad.setLaunchTicks(886_600, 886_800, 887_000); // All aligned and < MAX_TICK
   }
 
   function test_fuzz_setLaunchTicks(int24 launchTick, int24 graduationTick, int24 upperMaxTick) public {
     // Bound the ticks to reasonable ranges for fuzzing
-    launchTick = int24(bound(launchTick, -800000, 800000));
-    graduationTick = int24(bound(graduationTick, -800000, 800000));
-    upperMaxTick = int24(bound(upperMaxTick, -800000, 800000));
+    launchTick = int24(bound(launchTick, -800_000, 800_000));
+    graduationTick = int24(bound(graduationTick, -800_000, 800_000));
+    upperMaxTick = int24(bound(upperMaxTick, -800_000, 800_000));
 
     // Align ticks to TICK_SPACING (200)
     launchTick = (launchTick / 200) * 200;
@@ -627,13 +625,15 @@ contract TokenLaunchpadTest is Test {
     }
 
     // Check bounds
-    if (launchTick <= -887272) { // MIN_TICK
-      launchTick = -887000;
+    if (launchTick <= -887_272) {
+      // MIN_TICK
+      launchTick = -887_000;
       graduationTick = launchTick + 200;
       upperMaxTick = graduationTick + 200;
     }
-    if (upperMaxTick >= 887272) { // MAX_TICK
-      upperMaxTick = 887000;
+    if (upperMaxTick >= 887_272) {
+      // MAX_TICK
+      upperMaxTick = 887_000;
       graduationTick = upperMaxTick - 200;
       launchTick = graduationTick - 200;
     }

@@ -21,13 +21,14 @@ pragma solidity ^0.8.0;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IWETH9} from "@uniswap/v4-periphery/src/interfaces/external/IWETH9.sol";
 import {ICLMMAdapter} from "contracts/interfaces/ICLMMAdapter.sol";
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 
-contract UIHelper is ReentrancyGuard {
+contract UIHelper is ReentrancyGuard, IERC721Receiver {
   using SafeERC20 for IERC20;
 
   IWETH9 public immutable weth;
@@ -47,6 +48,11 @@ contract UIHelper is ReentrancyGuard {
   }
 
   receive() external payable {}
+
+  /// @inheritdoc IERC721Receiver
+  function onERC721Received(address, address, uint256, bytes calldata) external pure override returns (bytes4) {
+    return IERC721Receiver.onERC721Received.selector;
+  }
 
   constructor(address _weth, address _odos, address _launchpad) {
     weth = IWETH9(_weth);

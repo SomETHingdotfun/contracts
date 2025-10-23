@@ -3,10 +3,10 @@ pragma solidity ^0.8.0;
 
 import {SomeToken} from "contracts/SomeToken.sol";
 
+import {SomeProxy} from "contracts/SomeProxy.sol";
 import {ICLMMAdapter} from "contracts/interfaces/ICLMMAdapter.sol";
 import {IERC20, ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 import {TokenLaunchpadLinea} from "contracts/launchpad/TokenLaunchpadLinea.sol";
-import {SomeProxy} from "contracts/SomeProxy.sol";
 
 import {Test} from "lib/forge-std/src/Test.sol";
 import {MockERC20} from "test/mocks/MockERC20.sol";
@@ -112,22 +112,14 @@ contract TokenLaunchpadLineaTest is Test {
     // Deploy mock contracts
     something = new MockERC20("SomeETHing", "somETHing", 18);
     adapter = new MockCLMMAdapter();
-    
+
     // Deploy implementation contract
     TokenLaunchpadLinea launchpadImpl = new TokenLaunchpadLinea();
-    
+
     // Deploy proxy with initialization
-    bytes memory initData = abi.encodeWithSignature(
-      "initialize(address,address,address)",
-      owner,
-      address(something),
-      address(adapter)
-    );
-    SomeProxy launchpadProxy = new SomeProxy(
-      address(launchpadImpl),
-      proxyAdmin,
-      initData
-    );
+    bytes memory initData =
+      abi.encodeWithSignature("initialize(address,address,address)", owner, address(something), address(adapter));
+    SomeProxy launchpadProxy = new SomeProxy(address(launchpadImpl), proxyAdmin, initData);
     launchpad = TokenLaunchpadLinea(payable(address(launchpadProxy)));
 
     // Set launch ticks
@@ -173,7 +165,7 @@ contract TokenLaunchpadLineaTest is Test {
 
     address computedAddress = _calculateExpectedAddress(salt, creator, "Test Token", "TEST");
     assertEq(computedAddress != address(0), true);
-    
+
     (address token,,,) = launchpad.createAndBuy(
       ITokenLaunchpad.CreateParams({salt: salt, name: "Test Token", symbol: "TEST", metadata: "Test Metadata"}),
       computedAddress,
@@ -224,8 +216,6 @@ contract TokenLaunchpadLineaTest is Test {
   }
 
   // Test fee distribution
-  // NOTE: There's a bug in TokenLaunchpadLinea.sol - both treasuries are hardcoded to the same address
-  // This means the treasury receives 100% of fees instead of the intended 20% + 80% split
   function test_feeDistribution() public {
     // Create a token first
     bytes32 salt = _findValidTokenHash("Test Token", "TEST", creator, something);
@@ -245,11 +235,17 @@ contract TokenLaunchpadLineaTest is Test {
     deal(address(token), address(launchpad), 1000e18);
     deal(address(something), address(launchpad), 2000e18);
 
+    // The actual treasury addresses in TokenLaunchpadLinea
+    address referralContract = 0x0000000000000000000000000000000000000001;
+    address somethingTreasury = 0x0000000000000000000000000000000000000002;
+
     // Record initial balances
-    uint256 etherxTreasuryToken0Before = SomeToken(token).balanceOf(etherxTreasury);
-    uint256 somethingTreasuryToken0Before = SomeToken(token).balanceOf(somethingTreasury);
-    uint256 etherxTreasuryToken1Before = something.balanceOf(etherxTreasury);
-    uint256 somethingTreasuryToken1Before = something.balanceOf(somethingTreasury);
+    uint256 referralToken0Before = SomeToken(token).balanceOf(referralContract);
+    uint256 treasuryToken0Before = SomeToken(token).balanceOf(somethingTreasury);
+    uint256 creatorToken0Before = SomeToken(token).balanceOf(creator);
+    uint256 referralToken1Before = something.balanceOf(referralContract);
+    uint256 treasuryToken1Before = something.balanceOf(somethingTreasury);
+    uint256 creatorToken1Before = something.balanceOf(creator);
 
     // Set mock fees in the adapter
     adapter.setMockFees(1000e18, 2000e18);
@@ -257,20 +253,17 @@ contract TokenLaunchpadLineaTest is Test {
     // Claim fees
     launchpad.claimFees(SomeToken(token));
 
-    // Note: Both treasuries are hardcoded to the same address in TokenLaunchpadLinea
-    // So the treasury receives 100% of the tokens (20% + 80% = 100%)
-
     // Verify fee distribution for token0 (the created token)
-    // Since both treasuries are the same address, it receives 100% of the tokens
-    assertEq(SomeToken(token).balanceOf(etherxTreasury), etherxTreasuryToken0Before + 1000e18); // 100% of 1000
-    assertEq(SomeToken(token).balanceOf(somethingTreasury), somethingTreasuryToken0Before + 1000e18); // 100% of 1000
-      // (same address)
+    // 15% to referral, 50% to treasury, 35% to creator
+    assertEq(SomeToken(token).balanceOf(referralContract), referralToken0Before + 150e18); // 15% of 1000
+    assertEq(SomeToken(token).balanceOf(somethingTreasury), treasuryToken0Before + 500e18); // 50% of 1000
+    assertEq(SomeToken(token).balanceOf(creator), creatorToken0Before + 350e18); // 35% of 1000
 
     // Verify fee distribution for token1 (funding token)
-    // Since both treasuries are the same address, it receives 100% of the tokens
-    assertEq(something.balanceOf(etherxTreasury), etherxTreasuryToken1Before + 2000e18); // 100% of 2000
-    assertEq(something.balanceOf(somethingTreasury), somethingTreasuryToken1Before + 2000e18); // 100% of 2000 (same
-      // address)
+    // 15% to referral, 50% to treasury, 35% to creator
+    assertEq(something.balanceOf(referralContract), referralToken1Before + 300e18); // 15% of 2000
+    assertEq(something.balanceOf(somethingTreasury), treasuryToken1Before + 1000e18); // 50% of 2000
+    assertEq(something.balanceOf(creator), creatorToken1Before + 700e18); // 35% of 2000
   }
 
   // Test fee distribution with zero amounts
@@ -488,11 +481,7 @@ contract TokenLaunchpadLineaTest is Test {
     for (uint256 i = 0; i < maxAttempts; i++) {
       // Use a more unique salt generation that includes iteration-specific data
       // This ensures each call gets a different salt even in the same block
-      bytes32 salt = keccak256(abi.encode(
-        i, 
-        block.timestamp, 
-        block.number
-      ));
+      bytes32 salt = keccak256(abi.encode(i, block.timestamp, block.number));
 
       // Use the launchpad's computeTokenAddress method
       (address computedAddress, bool isValid) = launchpad.computeTokenAddress(

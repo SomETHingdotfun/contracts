@@ -2,6 +2,8 @@
 pragma solidity ^0.8.0;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+import {SomeProxy} from "contracts/SomeProxy.sol";
 import {ITokenLaunchpad} from "contracts/interfaces/ITokenLaunchpad.sol";
 import {UIHelper} from "contracts/launchpad/clmm/UIHelper.sol";
 
@@ -119,12 +121,19 @@ contract UIHelperTest is Test {
     // Deploy mock contracts
     fundingToken = new MockERC20("Funding Token", "FUND", 18);
     adapter = new MockCLMMAdapter();
-    launchpad = new TestableTokenLaunchpad();
     weth = new MockWETH9();
     odos = new MockODOS();
 
-    // Initialize the launchpad
-    launchpad.initialize(owner, address(fundingToken), address(adapter));
+    // Deploy launchpad with proxy
+    TestableTokenLaunchpad launchpadImpl = new TestableTokenLaunchpad();
+    bytes memory initData =
+      abi.encodeWithSignature("initialize(address,address,address)", owner, address(fundingToken), address(adapter));
+    SomeProxy launchpadProxy = new SomeProxy(
+      address(launchpadImpl),
+      owner, // using owner as proxy admin for simplicity
+      initData
+    );
+    launchpad = TestableTokenLaunchpad(payable(address(launchpadProxy)));
 
     // Deploy UIHelper
     uiHelper = new UIHelper(address(weth), address(odos), address(launchpad));
@@ -369,7 +378,7 @@ contract UIHelperTest is Test {
     odos.setMockOutput(address(fundingToken), 100 * 1e18);
 
     UIHelper.OdosParams memory odosParams = UIHelper.OdosParams({
-      tokenIn: IERC20(address(0)),
+      tokenIn: fundingToken, // When using ODOS data, tokenIn must be fundingToken
       tokenAmountIn: 0,
       odosTokenIn: IERC20(address(0)),
       odosTokenAmountIn: 0,

@@ -4,12 +4,13 @@ pragma solidity ^0.8.0;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC721Metadata} from "@openzeppelin/contracts/token/ERC721/extensions/IERC721Metadata.sol";
+
+import {SomeProxy} from "contracts/SomeProxy.sol";
 import {ICLMMAdapter} from "contracts/interfaces/ICLMMAdapter.sol";
 import {ICLSwapRouter} from "contracts/interfaces/thirdparty/ICLSwapRouter.sol";
 import {IClPool} from "contracts/interfaces/thirdparty/IClPool.sol";
 import {IClPoolFactory} from "contracts/interfaces/thirdparty/IClPoolFactory.sol";
 import {RamsesAdapter} from "contracts/launchpad/clmm/adapters/RamsesAdapter.sol";
-import {SomeProxy} from "contracts/SomeProxy.sol";
 
 import {Test} from "lib/forge-std/src/Test.sol";
 import {MockERC20} from "test/mocks/MockERC20.sol";
@@ -214,7 +215,7 @@ contract MockRamsesPoolFactory {
   {
     // Sort tokens to ensure canonical ordering
     (IERC20 token0, IERC20 token1) = _sortTokens(_token0, _token1);
-    
+
     bytes32 poolKey = keccak256(abi.encodePacked(address(token0), address(token1), _tickSpacing));
     require(pools[poolKey] == address(0), "Pool already exists");
 
@@ -228,7 +229,7 @@ contract MockRamsesPoolFactory {
   function getPool(IERC20 _token0, IERC20 _token1, int24 _tickSpacing) external view returns (address pool) {
     // Sort tokens to ensure canonical ordering
     (IERC20 token0, IERC20 token1) = _sortTokens(_token0, _token1);
-    
+
     bytes32 poolKey = keccak256(abi.encodePacked(address(token0), address(token1), _tickSpacing));
     return pools[poolKey];
   }
@@ -365,7 +366,7 @@ contract RamsesAdapterTest is Test {
 
     // Deploy RamsesAdapter implementation
     RamsesAdapter adapterImpl = new RamsesAdapter();
-    
+
     // Deploy proxy with initialization
     bytes memory initData = abi.encodeWithSignature(
       "initialize(address,address,address,address)",
@@ -374,11 +375,7 @@ contract RamsesAdapterTest is Test {
       address(nftPositionManager),
       address(poolFactory)
     );
-    SomeProxy adapterProxy = new SomeProxy(
-      address(adapterImpl),
-      proxyAdmin,
-      initData
-    );
+    SomeProxy adapterProxy = new SomeProxy(address(adapterImpl), proxyAdmin, initData);
     adapter = RamsesAdapter(payable(address(adapterProxy)));
 
     // Fund users with tokens
@@ -482,28 +479,30 @@ contract RamsesAdapterTest is Test {
     assertTrue(pool != address(0));
 
     // Verify the launchpad received the refunded tokens
-    // Expected: initial balance - 500M (first mint) - 300M (second mint) + 1M (adapter's initial tokens) = initial - 800M + 1M
-    uint256 expectedLaunchpadBalance = initialLaunchpadBalance - 500_000_000 * 1e18 - 300_000_000 * 1e18 + 1_000_000 * 1e18;
-    
+    // The adapter doesn't refund its initial balance, only the excess from what was transferred
+    // Expected: initial balance - 500M (first mint) - 300M (second mint) = initial - 800M
+    uint256 expectedLaunchpadBalance = initialLaunchpadBalance - 500_000_000 * 1e18 - 300_000_000 * 1e18;
+
     assertEq(token0.balanceOf(address(launchpad)), expectedLaunchpadBalance, "Launchpad should receive refunded tokens");
 
-    // Verify that the adapter has no tokens (all were refunded)
-    // This is the correct behavior - adapters should be stateless
-    assertEq(token0.balanceOf(address(adapter)), 0, "Adapter should have no tokens after operation");
+    // Verify that the adapter retains its initial balance (1M tokens)
+    // The refund mechanism only refunds what was transferred beyond the initial balance
+    assertEq(token0.balanceOf(address(adapter)), initialAdapterBalance, "Adapter should retain its initial balance");
   }
 
   function test_addSingleSidedLiquidity_tickUnderflowProtection() public {
     ICLMMAdapter.AddLiquidityParams memory params = ICLMMAdapter.AddLiquidityParams({
       tokenBase: token0,
       tokenQuote: fundingToken,
-      tick0: -887272, // MIN_TICK
+      tick0: -887_272, // MIN_TICK
       tick1: 0,
       tick2: 1000
     });
 
-    // This should revert because tick0 is MIN_TICK, causing underflow in tick0 - 1
+    // This should revert because tick0 is MIN_TICK and not aligned to TICK_SPACING (200)
+    // -887272 % 200 = -72, not 0
     vm.prank(address(launchpad));
-    vm.expectRevert("Tick0 too close to MIN_TICK");
+    vm.expectRevert(abi.encodeWithSelector(ICLMMAdapter.TickNotAligned.selector, -887_272));
     adapter.addSingleSidedLiquidity(params);
   }
 
@@ -511,7 +510,7 @@ contract RamsesAdapterTest is Test {
     // Create new tokens to avoid conflicts with existing pools
     MockERC20 tokenA = new MockERC20("TokenA", "TKA", 18);
     MockERC20 tokenB = new MockERC20("TokenB", "TKB", 18);
-    
+
     // Fund the launchpad with the new tokens
     vm.prank(address(launchpad));
     tokenA.mint(address(launchpad), 2_000_000_000 * 1e18);
@@ -524,7 +523,7 @@ contract RamsesAdapterTest is Test {
 
     // Test that tokens are sorted correctly regardless of input order
     ICLMMAdapter.AddLiquidityParams memory params1 = ICLMMAdapter.AddLiquidityParams({
-      tokenBase: tokenA,    // tokenA address < tokenB address
+      tokenBase: tokenA, // tokenA address < tokenB address
       tokenQuote: tokenB,
       tick0: -1000,
       tick1: 0,
@@ -532,7 +531,7 @@ contract RamsesAdapterTest is Test {
     });
 
     ICLMMAdapter.AddLiquidityParams memory params2 = ICLMMAdapter.AddLiquidityParams({
-      tokenBase: tokenB,  // tokenB address > tokenA address
+      tokenBase: tokenB, // tokenB address > tokenA address
       tokenQuote: tokenA,
       tick0: -1000,
       tick1: 0,
@@ -595,19 +594,14 @@ contract RamsesAdapterTest is Test {
     // Create tokens with known addresses for testing
     MockERC20 tokenA = new MockERC20("TokenA", "TKA", 18);
     MockERC20 tokenB = new MockERC20("TokenB", "TKB", 18);
-    
+
     // Ensure tokenA address < tokenB address
     if (address(tokenA) > address(tokenB)) {
       (tokenA, tokenB) = (tokenB, tokenA);
     }
 
-    ICLMMAdapter.AddLiquidityParams memory params = ICLMMAdapter.AddLiquidityParams({
-      tokenBase: tokenA,
-      tokenQuote: tokenB,
-      tick0: -1000,
-      tick1: 0,
-      tick2: 1000
-    });
+    ICLMMAdapter.AddLiquidityParams memory params =
+      ICLMMAdapter.AddLiquidityParams({tokenBase: tokenA, tokenQuote: tokenB, tick0: -1000, tick1: 0, tick2: 1000});
 
     // Fund the launchpad with the new tokens
     vm.prank(address(launchpad));
@@ -629,7 +623,7 @@ contract RamsesAdapterTest is Test {
     // Test creating pools with multiple different token pairs
     MockERC20 tokenC = new MockERC20("TokenC", "TKC", 18);
     MockERC20 tokenD = new MockERC20("TokenD", "TKD", 18);
-    
+
     // Fund the launchpad with the new tokens
     vm.prank(address(launchpad));
     tokenC.mint(address(launchpad), 2_000_000_000 * 1e18);
@@ -640,13 +634,8 @@ contract RamsesAdapterTest is Test {
     vm.prank(address(launchpad));
     tokenD.approve(address(adapter), type(uint256).max);
 
-    ICLMMAdapter.AddLiquidityParams memory params = ICLMMAdapter.AddLiquidityParams({
-      tokenBase: tokenC,
-      tokenQuote: tokenD,
-      tick0: -1000,
-      tick1: 0,
-      tick2: 1000
-    });
+    ICLMMAdapter.AddLiquidityParams memory params =
+      ICLMMAdapter.AddLiquidityParams({tokenBase: tokenC, tokenQuote: tokenD, tick0: -1000, tick1: 0, tick2: 1000});
 
     // Pool creation should succeed
     vm.prank(address(launchpad));
